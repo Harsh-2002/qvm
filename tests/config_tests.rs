@@ -54,6 +54,7 @@ memory_gb = 16
 
 #[test]
 fn user_can_add_a_custom_distro() {
+    // Legacy flat form is still supported (implicitly x86_64).
     let f = write_tmp(r#"
 [distros."ubuntu:22.04"]
 image  = "ubuntu-22.04.qcow2"
@@ -65,7 +66,9 @@ url    = "https://example.com/ubuntu-22.04.img"
     let cfg = Config::load(Some(f.path())).unwrap();
     assert!(cfg.distros.contains_key("ubuntu:22.04"));
     let d = cfg.distros.get("ubuntu:22.04").unwrap();
-    assert_eq!(d.image, "ubuntu-22.04.qcow2");
+    let (img, url) = d.variant_for("x86_64").unwrap();
+    assert_eq!(img, "ubuntu-22.04.qcow2");
+    assert_eq!(url, "https://example.com/ubuntu-22.04.img");
     assert_eq!(d.osinfo, "ubuntu22.04");
     assert!(!d.uefi);
 }
@@ -81,7 +84,30 @@ url    = "https://my.mirror/debian.qcow2"
 "#);
     let cfg = Config::load(Some(f.path())).unwrap();
     let d = cfg.distros.get("debian:13").unwrap();
-    assert_eq!(d.image, "my-debian.qcow2");
+    let (img, _) = d.variant_for("x86_64").unwrap();
+    assert_eq!(img, "my-debian.qcow2");
+}
+
+#[test]
+fn user_can_define_per_arch_variants() {
+    let f = write_tmp(r#"
+[distros."ubuntu:22.04"]
+osinfo = "ubuntu22.04"
+
+[distros."ubuntu:22.04".arch.x86_64]
+image = "u22-amd64.qcow2"
+url   = "https://example.com/u22-amd64.img"
+
+[distros."ubuntu:22.04".arch.aarch64]
+image = "u22-arm64.qcow2"
+url   = "https://example.com/u22-arm64.img"
+"#);
+    let cfg = Config::load(Some(f.path())).unwrap();
+    let d = cfg.distros.get("ubuntu:22.04").unwrap();
+    let (img64, _) = d.variant_for("x86_64").unwrap();
+    let (imgaa, _) = d.variant_for("aarch64").unwrap();
+    assert_eq!(img64, "u22-amd64.qcow2");
+    assert_eq!(imgaa, "u22-arm64.qcow2");
 }
 
 #[test]
@@ -91,8 +117,12 @@ fn image_path_joins_correctly() {
 images = "/data/imgs"
 "#);
     let cfg = Config::load(Some(f.path())).unwrap();
+    // The path joins under the configured images dir; the exact filename
+    // depends on the host arch (amd64 vs arm64). Assert the directory
+    // prefix and the qcow2 suffix instead of the full filename.
     let p = cfg.image_path("debian:13").unwrap();
-    assert_eq!(p.to_str().unwrap(), "/data/imgs/debian-13.qcow2");
+    assert!(p.to_str().unwrap().starts_with("/data/imgs/debian-13-"));
+    assert!(p.to_str().unwrap().ends_with(".qcow2"));
 }
 
 #[test]
@@ -107,10 +137,22 @@ fn unknown_distro_errors_helpfully() {
 #[test]
 fn builtin_distros_all_have_https_urls() {
     for (key, d) in builtin_distros() {
-        assert!(
-            d.url.starts_with("https://"),
-            "{key} URL must be https (got: {})", d.url
-        );
+        for (arch, v) in &d.arch {
+            assert!(
+                v.url.starts_with("https://"),
+                "{key}/{arch} URL must be https (got: {})", v.url
+            );
+        }
+    }
+}
+
+#[test]
+fn builtin_distros_carry_both_amd64_and_arm64_variants() {
+    for (key, d) in builtin_distros() {
+        assert!(d.arch.contains_key("x86_64"),
+            "{key} missing x86_64 variant");
+        assert!(d.arch.contains_key("aarch64"),
+            "{key} missing aarch64 variant");
     }
 }
 

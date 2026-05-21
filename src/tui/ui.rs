@@ -101,6 +101,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(summary, t.dim()),
     ];
 
+    if app.orphan_count > 0 {
+        spans.push(Span::styled("  •  ", Style::default().fg(t.text_faint)));
+        spans.push(Span::styled(
+            format!("! {} orphan · run `qvm cleanup`", app.orphan_count),
+            Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
+        ));
+    }
+
     // Right-aligned context hint or spinner.
     let right_hint = if app.is_refreshing {
         format!("{} refreshing… ", t.spinner(app.tick))

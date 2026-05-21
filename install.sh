@@ -19,7 +19,6 @@
 set -eu
 
 REPO="Harsh-2002/qvm"
-ARTIFACT_URL="https://nightly.link/${REPO}/workflows/build/main/qvm-linux-amd64-static.zip"
 BIN_DIR="/usr/local/bin"
 BIN="${BIN_DIR}/qvm"
 
@@ -27,11 +26,19 @@ die() { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 ok()  { printf '\033[32m✓\033[0m %s\n' "$*"; }
 
 # ── guards ────────────────────────────────────────────────────────────────────
-[ "$(uname -s)" = "Linux"   ] || die "Linux only."
-[ "$(uname -m)" = "x86_64"  ] || die "x86_64 only."
-[ "$(id -u)"    -eq 0       ] || die "run as root (sudo sh install.sh)."
+[ "$(uname -s)" = "Linux" ] || die "Linux only."
+[ "$(id -u)"    -eq 0     ] || die "run as root (sudo sh install.sh)."
 command -v curl  >/dev/null 2>&1 || die "curl missing."
 command -v unzip >/dev/null 2>&1 || die "unzip missing."
+
+# ── arch detection ────────────────────────────────────────────────────────────
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+    x86_64)  ARTIFACT_NAME="qvm-linux-amd64-static" ;;
+    aarch64) ARTIFACT_NAME="qvm-linux-arm64-static" ;;
+    *) die "unsupported arch '$HOST_ARCH' (qvm ships amd64 and arm64)." ;;
+esac
+ARTIFACT_URL="https://nightly.link/${REPO}/workflows/build/main/${ARTIFACT_NAME}.zip"
 
 ACTION="installed"
 [ -x "$BIN" ] && ACTION="updated"

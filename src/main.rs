@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
 use qvm::commands;
 use qvm::config::Config;
@@ -27,14 +27,15 @@ struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::enum_variant_names)]
 enum Cmd {
-    /// First-run setup: write /etc/qvm/config.toml and prepare dirs.
+    /// First-run setup: launches the TUI onboarding wizard. Writes
+    /// /etc/qvm/config.toml and prepares dirs.
     Init {
-        /// After setup, download all baseline images.
-        #[arg(long)]
-        pull_all: bool,
-        /// Non-interactive: skip the wizard and write defaults immediately.
+        /// Non-interactive: skip the wizard and write default config.
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Overwrite an existing config file.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Create and start a VM.
@@ -69,19 +70,25 @@ enum Cmd {
         #[arg(short = 'f', long)] force: bool,
     },
 
-    /// Start a stopped VM.
-    Start   { name: String },
-    /// Graceful shutdown.
-    Stop    { name: String },
-    /// Reboot.
+    /// Start one or more stopped VMs (or `--all`).
+    Start   { names: Vec<String>, #[arg(long)] all: bool },
+    /// Graceful shutdown of one or more VMs (or `--all`).
+    Stop    { names: Vec<String>, #[arg(long)] all: bool },
+    /// Reboot one or more VMs (or `--all`).
     #[command(alias = "reboot")]
-    Restart { name: String },
-    /// Force power-off.
-    Kill    { name: String },
+    Restart { names: Vec<String>, #[arg(long)] all: bool },
+    /// Force power-off one or more VMs (or `--all`).
+    Kill    { names: Vec<String>, #[arg(long)] all: bool },
+
+    /// Attach to the VM's serial console (Ctrl-] to detach).
+    Console { name: String },
+
+    /// SSH into a VM directly (resolves login user + IP, then execs ssh).
+    Ssh     { name: String },
 
     /// List all VMs.
     #[command(alias = "ps")]
-    Ls,
+    Ls { #[arg(long)] json: bool },
     /// Show VM details.
     Inspect { name: String },
     /// Show VM IPv4.
@@ -100,9 +107,9 @@ enum Cmd {
     },
 
     /// List configured distros.
-    Distros,
+    Distros { #[arg(long)] json: bool },
     /// List downloaded base images.
-    Images,
+    Images  { #[arg(long)] json: bool },
     /// Download a distro's base image (atomic).
     Pull { distro: String },
 
@@ -113,6 +120,58 @@ enum Cmd {
     /// Grow the disk (e.g. +50G or 200G).
     ResizeDisk { name: String, size: String },
 
+    /// Reclaim disk space from VMs deleted out-of-band (e.g. via virsh).
+    /// Lists every qcow2 / seed file with no matching libvirt domain.
+    Cleanup {
+        /// Skip the confirmation prompt.
+        #[arg(short = 'f', long)] force: bool,
+    },
+
+    /// Detach a VM's qcow2 from its backing file (full-copy in place).
+    /// Migration aid for VMs from the bash predecessor.
+    Flatten { name: String },
+
+    /// Manage VM snapshots (create, list, revert, rm, rotate).
+    Snap {
+        #[command(subcommand)]
+        sub: SnapCmd,
+    },
+
+    /// Package a VM into a portable .qvm.tar archive.
+    Export {
+        /// VM name.
+        name: String,
+        /// Destination tarball path.
+        out: PathBuf,
+        /// Force live mode (--quiesce snapshot, no downtime).
+        /// Requires qemu-guest-agent to be responsive.
+        #[arg(long, conflicts_with = "stop")]
+        live: bool,
+        /// Force offline mode: stop the VM, convert, restart.
+        #[arg(long, conflicts_with = "live")]
+        stop: bool,
+        /// After export, prune older tarballs in this directory.
+        #[arg(long, requires = "keep")]
+        rotate_dir: Option<PathBuf>,
+        /// Keep N newest tarballs (used with --rotate-dir).
+        #[arg(long, requires = "rotate_dir")]
+        keep: Option<u32>,
+    },
+
+    /// Restore a VM from a .qvm.tar archive.
+    Import {
+        /// Tarball path.
+        tarball: PathBuf,
+        /// New VM name (overrides the name baked into the tarball).
+        #[arg(long)] name: Option<String>,
+        /// Bridge to attach (default: [network] bridge from config).
+        #[arg(long)] bridge: Option<String>,
+        /// osinfo override (default: derived from distro_hint, falls back to generic).
+        #[arg(long)] osinfo: Option<String>,
+        /// Skip sha256 verification of disk.qcow2.
+        #[arg(long)] skip_verify: bool,
+    },
+
     /// Check host dependencies (and optionally install them).
     Doctor {
         /// After listing what's missing, install it.
@@ -122,6 +181,41 @@ enum Cmd {
     },
     /// Print shell completion script (bash | zsh | fish | elvish | powershell).
     Completions { shell: Shell },
+}
+
+#[derive(Subcommand)]
+enum SnapCmd {
+    /// Take a snapshot of a VM.
+    Create(SnapCreateArgs),
+    /// List a VM's snapshots.
+    List { name: String },
+    /// Revert a VM to a named snapshot.
+    Revert(SnapRevertArgs),
+    /// Delete a named snapshot.
+    Rm { name: String, snap: String },
+    /// Keep only the newest N snapshots, deleting the rest.
+    Rotate {
+        name: String,
+        #[arg(long)] keep: u32,
+    },
+}
+
+#[derive(Args)]
+struct SnapCreateArgs {
+    name: String,
+    snap: String,
+    /// Use qemu-guest-agent to flush guest filesystems before snapshotting.
+    #[arg(long)]
+    quiesce: bool,
+}
+
+#[derive(Args)]
+struct SnapRevertArgs {
+    name: String,
+    snap: String,
+    /// Force the VM running after revert (regardless of snapshot's recorded state).
+    #[arg(long)]
+    running: bool,
 }
 
 fn main() -> ExitCode {
@@ -169,7 +263,7 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
 
     // Commands that don't need a config file.
     match cmd {
-        Cmd::Init { pull_all, yes }    => return commands::init::run(cfg_path, *pull_all, *yes),
+        Cmd::Init { yes, force }       => return commands::init::run(cfg_path, *yes, *force),
         Cmd::Doctor { install, yes }   => return commands::doctor::run_doctor(*install, *yes),
         Cmd::Completions { shell }     => return commands::completions::run::<Cli>(*shell),
         _ => {}
@@ -195,24 +289,59 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
         }
 
         Cmd::Rm { name, force }   => commands::delete::run(&cfg, name, *force),
-        Cmd::Start   { name }     => commands::lifecycle::start(name),
-        Cmd::Stop    { name }     => commands::lifecycle::stop(name),
-        Cmd::Restart { name }     => commands::lifecycle::restart(name),
-        Cmd::Kill    { name }     => commands::lifecycle::kill(name),
+        Cmd::Start   { names, all } => commands::lifecycle::batch(commands::lifecycle::Verb::Start,   names, *all),
+        Cmd::Stop    { names, all } => commands::lifecycle::batch(commands::lifecycle::Verb::Stop,    names, *all),
+        Cmd::Restart { names, all } => commands::lifecycle::batch(commands::lifecycle::Verb::Restart, names, *all),
+        Cmd::Kill    { names, all } => commands::lifecycle::batch(commands::lifecycle::Verb::Kill,    names, *all),
+        Cmd::Console { name }     => commands::console::run(name),
+        Cmd::Ssh     { name }     => commands::info::ssh_exec(&cfg, name),
 
-        Cmd::Ls                   => commands::info::ls(),
+        Cmd::Ls { json }          => commands::info::ls(*json),
         Cmd::Inspect { name }     => commands::info::inspect(name),
         Cmd::Ip      { name }     => commands::info::ip(name),
         Cmd::SshCmd  { name }     => commands::info::ssh_cmd(&cfg, name),
 
         Cmd::Vnc { name, open, browser } => commands::vnc::run(&cfg, name, *open, *browser),
 
-        Cmd::Distros              => commands::images::distros(&cfg),
-        Cmd::Images               => commands::images::images(&cfg),
+        Cmd::Distros { json }     => commands::images::distros(&cfg, *json),
+        Cmd::Images  { json }     => commands::images::images(&cfg, *json),
         Cmd::Pull { distro }      => commands::pull::run(&cfg, distro),
 
         Cmd::SetCpu { name, vcpus } => commands::resources::set_cpu(name, *vcpus),
         Cmd::SetRam { name, gb }    => commands::resources::set_ram(name, *gb),
         Cmd::ResizeDisk { name, size } => commands::resources::resize_disk(&cfg, name, size),
+
+        Cmd::Cleanup { force }      => commands::cleanup::run(&cfg, *force),
+        Cmd::Flatten { name }       => commands::flatten::run(&cfg, name),
+
+        Cmd::Snap { sub }           => match sub {
+            SnapCmd::Create(a)            => commands::snap::create(&a.name, &a.snap, a.quiesce),
+            SnapCmd::List   { name }      => commands::snap::list(name),
+            SnapCmd::Revert(a)            => commands::snap::revert(&a.name, &a.snap, a.running),
+            SnapCmd::Rm     { name, snap }=> commands::snap::remove(name, snap),
+            SnapCmd::Rotate { name, keep }=> commands::snap::rotate(name, *keep),
+        },
+
+        Cmd::Export { name, out, live, stop, rotate_dir, keep } => {
+            let mode = if *live { commands::export::Mode::Live }
+                       else if *stop { commands::export::Mode::Stop }
+                       else { commands::export::Mode::Auto };
+            commands::export::run(&cfg, commands::export::Args {
+                name: name.clone(),
+                out:  out.clone(),
+                mode,
+                rotate_dir: rotate_dir.clone(),
+                keep: *keep,
+            })
+        }
+        Cmd::Import { tarball, name, bridge, osinfo, skip_verify } => {
+            commands::import::run(&cfg, commands::import::Args {
+                tarball: tarball.clone(),
+                name:    name.clone(),
+                bridge:  bridge.clone(),
+                osinfo:  osinfo.clone(),
+                skip_verify: *skip_verify,
+            })
+        }
     }
 }

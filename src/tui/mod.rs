@@ -13,7 +13,8 @@ pub mod app;
 mod events;
 mod forms;
 pub mod onboard;
-mod theme;
+pub mod refresh;
+pub mod theme;
 mod ui;
 
 use crate::cmd::run_tty;
@@ -28,7 +29,11 @@ use crossterm::{
     },
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{io::stdout, time::Duration};
+use std::{
+    io::stdout,
+    sync::{mpsc, Arc, Mutex},
+    time::Duration,
+};
 
 pub use app::{App, Mode};
 
@@ -65,11 +70,33 @@ fn main_loop(
     cfg: &Config,
 ) -> Result<()> {
     let mut app = App::new();
+    app.theme = theme::Theme::from_name(&cfg.tui.theme);
+    // Initial blocking refresh so the UI is populated on first paint.
     app.refresh(cfg);
+    // One-shot orphan scan; renders as a header hint if non-zero.
+    app.orphan_count = crate::commands::cleanup::scan(cfg)
+        .map(|v| v.len())
+        .unwrap_or(0);
+
+    // Background refresh worker. The shared selected-name lets the worker
+    // refresh dominfo for whichever row the user is looking at.
+    let selected: Arc<Mutex<Option<String>>> =
+        Arc::new(Mutex::new(app.selected_name()));
+    let (tx, rx) = mpsc::channel::<refresh::RefreshMsg>();
+    let _worker = refresh::spawn(cfg.clone(), selected.clone(), tx);
 
     while !app.should_quit {
         terminal.draw(|f| ui::draw(f, &mut app)).map_err(io_err)?;
         app.tick = app.tick.wrapping_add(1);
+
+        // Drain any refresh messages waiting on the channel. try_recv is
+        // non-blocking so the event-poll cadence below stays responsive.
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                refresh::RefreshMsg::Starting    => app.is_refreshing = true,
+                refresh::RefreshMsg::Result(res) => app.apply_async_refresh(res),
+            }
+        }
 
         if event::poll(Duration::from_millis(100)).map_err(io_err)? {
             let ev = event::read().map_err(io_err)?;
@@ -87,13 +114,13 @@ fn main_loop(
             }
         }
 
-        if app.tick_due() {
-            // Refresh inline. We intentionally do NOT do an extra
-            // terminal.draw with `is_refreshing=true` first — that caused
-            // visible flicker every 2 s as the spinner appeared and then
-            // disappeared in quick succession. The spinner remains on the
-            // App but only renders if a future async refresh model uses it.
-            app.refresh(cfg);
+        // Keep the worker's "current selection" in sync. Cheap: short lock,
+        // String clone only when changed.
+        if let Ok(mut g) = selected.lock() {
+            let cur = app.selected_name();
+            if g.as_ref() != cur.as_ref() {
+                *g = cur;
+            }
         }
     }
     Ok(())

@@ -27,7 +27,12 @@ pub struct Theme {
 }
 
 impl Default for Theme {
-    fn default() -> Self {
+    fn default() -> Self { Self::mocha() }
+}
+
+impl Theme {
+    /// Catppuccin Mocha (dark) — the original qvm theme.
+    pub fn mocha() -> Self {
         // Catppuccin Mocha — https://github.com/catppuccin/catppuccin
         Self {
             surface:      Color::Rgb(0x31, 0x32, 0x44), // surface0
@@ -40,12 +45,35 @@ impl Default for Theme {
             ok:           Color::Rgb(0xa6, 0xe3, 0xa1), // green
             warn:         Color::Rgb(0xf9, 0xe2, 0xaf), // yellow
             err:          Color::Rgb(0xf3, 0x8b, 0xa8), // red
-            overlay:      Color::Rgb(0x18, 0x18, 0x25), // mantle (modal bg)
+            overlay:      Color::Rgb(0x18, 0x18, 0x25), // mantle
         }
     }
-}
 
-impl Theme {
+    /// Catppuccin Latte (light) — pale background, dark text.
+    pub fn latte() -> Self {
+        Self {
+            surface:      Color::Rgb(0xeb, 0xeb, 0xeb), // mantle-ish (lighter than base)
+            border:       Color::Rgb(0xac, 0xb0, 0xbe), // surface1
+            border_focus: Color::Rgb(0x88, 0x39, 0xef), // mauve
+            text:         Color::Rgb(0x4c, 0x4f, 0x69), // text (dark slate)
+            text_dim:     Color::Rgb(0x5c, 0x5f, 0x77), // subtext1
+            text_faint:   Color::Rgb(0x8c, 0x8f, 0xa1), // overlay0
+            accent:       Color::Rgb(0x88, 0x39, 0xef), // mauve
+            ok:           Color::Rgb(0x40, 0xa0, 0x2b), // green
+            warn:         Color::Rgb(0xdf, 0x8e, 0x1d), // yellow
+            err:          Color::Rgb(0xd2, 0x0f, 0x39), // red
+            overlay:      Color::Rgb(0xe6, 0xe9, 0xef), // surface2
+        }
+    }
+
+    /// Resolve a theme from a config string. Unknown names fall back to mocha.
+    pub fn from_name(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "latte" | "light"  => Self::latte(),
+            _                  => Self::mocha(),
+        }
+    }
+
     // ── style primitives ───────────────────────────────────────────────────
 
     pub fn text(&self)        -> Style { Style::default().fg(self.text) }

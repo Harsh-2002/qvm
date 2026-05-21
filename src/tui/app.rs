@@ -98,6 +98,10 @@ pub struct App {
     pub sidebar_hits: Vec<(Rect, usize)>,
     /// `(area, hotkey_char)` for action-bar buttons.
     pub action_hits: Vec<(Rect, char)>,
+    /// Count of files on disk with no matching libvirt domain. Computed
+    /// once at TUI startup. Non-zero values render a hint in the header
+    /// pointing at `qvm cleanup`.
+    pub orphan_count: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -140,6 +144,7 @@ impl App {
             pending: None,
             sidebar_hits: Vec::new(),
             action_hits: Vec::new(),
+            orphan_count: 0,
         }
     }
 
@@ -150,7 +155,11 @@ impl App {
         }
     }
 
-    /// Refresh from libvirt. Best-effort: surfaces failures as a toast.
+    /// Synchronous refresh — blocking on libvirt. Use this only for the
+    /// initial pre-loop fetch and for post-action refreshes (after
+    /// create/delete) where the user just performed an action and expects
+    /// to see the result immediately. The 2-second tick refresh runs on a
+    /// background thread; see [`apply_async_refresh`].
     ///
     /// IP lookups are CACHED across refreshes — once we have an IP for a
     /// running VM, we don't re-query virsh agent every tick (each query
@@ -163,67 +172,73 @@ impl App {
         self.last_refresh = Some(Instant::now());
         let result = libvirt::domains();
         self.is_refreshing = false;
-        match result {
-            Ok(doms) => {
-                let prev_selected_name = self.selected_name();
-                // Reuse IPs we already learned for VMs that are still present.
-                let prev_ips: std::collections::HashMap<String, String> =
-                    self.rows.iter()
-                        .filter_map(|r| r.ip.as_ref().map(|ip| (r.name.clone(), ip.clone())))
-                        .collect();
-                self.rows = doms.into_iter().map(|d| {
-                    let ip = if d.state == "running" {
-                        prev_ips.get(&d.name).cloned().or_else(|| libvirt::ipv4(&d.name))
-                    } else {
-                        None
-                    };
-                    VmRow { ip, name: d.name, state: d.state, dominfo: None }
-                }).collect();
-                self.apply_sort();
+        let doms = match result {
+            Ok(d) => d,
+            Err(e) => { self.toast_err(format!("refresh failed: {e}")); return; }
+        };
+        // Reuse IPs we already learned for VMs that are still present.
+        let prev_ips: std::collections::HashMap<String, String> =
+            self.rows.iter()
+                .filter_map(|r| r.ip.as_ref().map(|ip| (r.name.clone(), ip.clone())))
+                .collect();
+        let rows: Vec<VmRow> = doms.into_iter().map(|d| {
+            let ip = if d.state == "running" {
+                prev_ips.get(&d.name).cloned().or_else(|| libvirt::ipv4(&d.name))
+            } else {
+                None
+            };
+            VmRow { ip, name: d.name, state: d.state, dominfo: None }
+        }).collect();
+        // dominfo for the selected VM is fetched synchronously here so the
+        // detail pane refreshes on user-initiated actions without waiting
+        // for the next worker tick.
+        let dominfo = self.selected_name()
+            .and_then(|n| libvirt::dominfo(&n).ok().map(|raw| (n, raw)));
+        self.apply_refresh(rows, dominfo);
+    }
 
-                // Restore selection by name if possible.
-                if let Some(prev) = prev_selected_name {
-                    if let Some(i) = self.visible().iter().position(|r| r.name == prev) {
-                        self.selected = i;
-                    }
-                }
-                let visible = self.visible_count();
-                if visible == 0 {
-                    self.selected = 0;
-                    if !matches!(self.mode, Mode::CreateForm | Mode::Help) {
-                        self.mode = Mode::EmptyState;
-                    }
-                } else {
-                    if self.selected >= visible { self.selected = visible - 1; }
-                    if matches!(self.mode, Mode::EmptyState) {
-                        self.mode = Mode::Detail;
-                    }
-                }
+    /// Apply a refresh result produced by the background worker.
+    /// See [`crate::tui::refresh`].
+    pub fn apply_async_refresh(&mut self, result: crate::tui::refresh::RefreshResult) {
+        self.last_refresh = Some(Instant::now());
+        self.is_refreshing = false;
+        self.apply_refresh(result.rows, result.selected_dominfo);
+    }
 
-                // Pull dominfo for the selected VM only.
-                if let Some(name) = self.selected_name() {
-                    if let Ok(s) = libvirt::dominfo(&name) {
-                        if let Some(idx) = self.visible_index() {
-                            if let Some(actual) = self.row_index_for_visible(idx) {
-                                self.rows[actual].dominfo = Some(s);
-                            }
-                        }
-                    }
-                }
-                // Clear pending optimistic state once the real state catches up.
-                if let Some((pname, _)) = &self.pending {
-                    if !self.rows.iter().any(|r| &r.name == pname) {
-                        // VM gone (e.g. deletion confirmed) — clear.
-                        self.pending = None;
-                    } else {
-                        // For lifecycle actions: clear after one refresh tick.
-                        // The real state from virsh now drives the row.
-                        self.pending = None;
-                    }
-                }
+    /// Common state transition between sync and async refresh. Pure logic.
+    fn apply_refresh(&mut self, rows: Vec<VmRow>, selected_dominfo: Option<(String, String)>) {
+        let prev_selected_name = self.selected_name();
+        self.rows = rows;
+        self.apply_sort();
+
+        // Restore selection by name if possible.
+        if let Some(prev) = prev_selected_name {
+            if let Some(i) = self.visible().iter().position(|r| r.name == prev) {
+                self.selected = i;
             }
-            Err(e) => self.toast_err(format!("refresh failed: {e}")),
         }
+        let visible = self.visible_count();
+        if visible == 0 {
+            self.selected = 0;
+            if !matches!(self.mode, Mode::CreateForm | Mode::Help) {
+                self.mode = Mode::EmptyState;
+            }
+        } else {
+            if self.selected >= visible { self.selected = visible - 1; }
+            if matches!(self.mode, Mode::EmptyState) {
+                self.mode = Mode::Detail;
+            }
+        }
+
+        // Splice dominfo onto the matching row.
+        if let Some((name, raw)) = selected_dominfo {
+            if let Some(row) = self.rows.iter_mut().find(|r| r.name == name) {
+                row.dominfo = Some(raw);
+            }
+        }
+
+        // Clear pending optimistic state — the real state has caught up.
+        self.pending = None;
     }
 
     /// What state should we display for a row, accounting for optimistic
@@ -268,14 +283,6 @@ impl App {
     pub fn selected_state(&self) -> Option<String> {
         self.visible().get(self.selected).map(|r| r.state.clone())
     }
-    fn visible_index(&self) -> Option<usize> {
-        if self.selected < self.visible_count() { Some(self.selected) } else { None }
-    }
-    fn row_index_for_visible(&self, vis_idx: usize) -> Option<usize> {
-        let name = self.visible().get(vis_idx).map(|r| r.name.clone())?;
-        self.rows.iter().position(|r| r.name == name)
-    }
-
     pub fn toast_ok(&mut self, m: String)  { self.toast = Some((Toast::Ok(m),  Instant::now())); }
     pub fn toast_err(&mut self, m: String) { self.toast = Some((Toast::Err(m), Instant::now())); }
     pub fn current_toast(&self) -> Option<&Toast> {

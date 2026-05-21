@@ -88,7 +88,8 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     //
     // This is the architectural fix that prevents the Dev/Hermes class
     // of corruption. Pulling new bases later cannot affect existing VMs.
-    println!("Creating {disk_gb}G self-contained disk from {}...", d.image);
+    let (image_name, _) = d.variant_for(crate::arch::host())?;
+    println!("Creating {disk_gb}G self-contained disk from {}...", image_name);
     run_inherit("qemu-img", [
         "convert", "-p", "-O", "qcow2",
         base.to_str().unwrap(),
@@ -146,7 +147,14 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
         "--import".into(),
         "--noautoconsole".into(),
     ];
-    if d.uefi {
+    // Arch-specific knobs:
+    //   - amd64 + UEFI distro (e.g. Alpine): --machine q35 --boot uefi…
+    //   - arm64: --arch aarch64 --machine virt --boot uefi,…  (mandatory)
+    if crate::arch::is_arm() {
+        args.push("--arch".into());    args.push("aarch64".into());
+        args.push("--machine".into()); args.push("virt".into());
+        args.push("--boot".into());    args.push("uefi,loader.secure=no".into());
+    } else if d.uefi {
         args.push("--machine".into()); args.push("q35".into());
         args.push("--boot".into());    args.push("uefi,loader.secure=no".into());
     }

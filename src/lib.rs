@@ -4,6 +4,7 @@
 //! integration test suite can exercise individual modules directly
 //! without touching libvirt or the network.
 
+pub mod arch;
 pub mod cloudinit;
 pub mod cmd;
 pub mod commands;

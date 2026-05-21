@@ -8,12 +8,19 @@ set -euo pipefail
 require_root
 require_qvm
 
-# If a config already exists, leave it alone - init should be idempotent.
-qvm init >/dev/null 2>&1
+# Bare `qvm init` opens the TUI wizard (interactive); the test harness
+# uses --yes for the silent path. Either way, this is idempotent only
+# when --force is added, but for a fresh host we just want a config to
+# exist after running it.
 if [ -f /etc/qvm/config.toml ]; then
-    pass "config exists at /etc/qvm/config.toml"
+    pass "config already exists at /etc/qvm/config.toml (leaving it)"
 else
-    fail "qvm init did not create /etc/qvm/config.toml"
+    qvm init --yes >/dev/null 2>&1
+    if [ -f /etc/qvm/config.toml ]; then
+        pass "config written to /etc/qvm/config.toml"
+    else
+        fail "qvm init --yes did not create /etc/qvm/config.toml"
+    fi
 fi
 
 # Distros should print at least the 5 baked-in ones.

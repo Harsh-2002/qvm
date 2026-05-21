@@ -29,6 +29,9 @@ grub_timeout = 0                       # instant boot; comment out to keep distr
 [vnc]
 bind = "127.0.0.1"                     # "0.0.0.0" to expose on LAN (no auth by default)
 
+[tui]
+theme = "mocha"                        # "mocha" (dark, default) or "latte" (light)
+
 # SSH public keys injected for both the created login user AND root.
 ssh_keys = [
     # "ssh-ed25519 AAAA... you@laptop",

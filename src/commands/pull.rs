@@ -6,9 +6,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub fn run(cfg: &Config, distro: &str) -> Result<()> {
-    let d = cfg.distro(distro)?;
+    let url = cfg.image_url(distro)?;
     println!("Pulling {distro}:");
-    println!("  {}", d.url);
+    println!("  {url}");
     println!("  -> {}", cfg.image_path(distro)?.display());
     pull_one(cfg, distro)?;
     println!("Ready: {}", cfg.image_path(distro)?.display());
@@ -19,7 +19,7 @@ pub fn run(cfg: &Config, distro: &str) -> Result<()> {
 /// rename on success. No external `wget` dependency — uses an embedded
 /// HTTPS client (`ureq` + rustls + bundled Mozilla CA roots).
 pub fn pull_one(cfg: &Config, distro: &str) -> Result<()> {
-    let d    = cfg.distro(distro)?;
+    let url  = cfg.image_url(distro)?;
     let dest = cfg.image_path(distro)?;
     let tmp  = dest.with_extension("partial");
 
@@ -30,7 +30,7 @@ pub fn pull_one(cfg: &Config, distro: &str) -> Result<()> {
     }
     let _ = fs::remove_file(&tmp);
 
-    if let Err(e) = download_with_progress(&d.url, &tmp) {
+    if let Err(e) = download_with_progress(&url, &tmp) {
         let _ = fs::remove_file(&tmp);
         return Err(Error::User(format!(
             "download failed for {distro}: {e}; {} is unchanged.",

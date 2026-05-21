@@ -33,7 +33,7 @@ test/
 ├── README.md            short user-facing version
 ├── run-all.sh           orchestrator: runs every test, summarises
 ├── 01-doctor.sh         host dependency check passes
-├── 02-init.sh           `qvm init --pull-all` downloads the baseline
+├── 02-init.sh           `qvm init --yes` writes the default config
 ├── 03-create-debian.sh  create + boot + ssh + rm cycle on debian:13
 ├── 04-create-alpine.sh  same on alpine:3.20 (UEFI path)
 ├── 05-self-contained.sh prove the VM disk has NO backing file

@@ -7,12 +7,14 @@ use std::fs;
 
 /// Every external program qvm depends on, plus what package provides it
 /// on each distro family.
+#[derive(Debug, Clone, Copy)]
 pub struct Dep {
     pub binary: &'static str,
     pub why: &'static str,
     pub packages: Packages,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct Packages {
     pub apt:    &'static str,  // debian, ubuntu
     pub dnf:    &'static str,  // fedora, rocky, alma, rhel
@@ -20,7 +22,9 @@ pub struct Packages {
     pub pacman: &'static str,  // arch
 }
 
-pub const DEPS: &[Dep] = &[
+/// Arch-independent dependencies. The arch-dependent qemu binary is
+/// appended at runtime in [`deps_for_host`].
+pub const DEPS_BASE: &[Dep] = &[
     Dep {
         binary: "virsh",
         why: "manage libvirt domains (start, stop, list, undefine)",
@@ -52,16 +56,6 @@ pub const DEPS: &[Dep] = &[
         },
     },
     Dep {
-        binary: "qemu-system-x86_64",
-        why: "the actual VM emulator (KVM acceleration on amd64)",
-        packages: Packages {
-            apt:    "qemu-system-x86",
-            dnf:    "qemu-kvm",
-            apk:    "qemu-system-x86_64",
-            pacman: "qemu-system-x86",
-        },
-    },
-    Dep {
         binary: "genisoimage",
         why: "build the cloud-init seed ISO (NoCloud datasource)",
         packages: Packages {
@@ -72,6 +66,42 @@ pub const DEPS: &[Dep] = &[
         },
     },
 ];
+
+/// Per-arch QEMU emulator dep, picked from [`crate::arch::host()`].
+const QEMU_X86_64: Dep = Dep {
+    binary: "qemu-system-x86_64",
+    why: "the actual VM emulator (KVM acceleration on amd64)",
+    packages: Packages {
+        apt:    "qemu-system-x86",
+        dnf:    "qemu-kvm",
+        apk:    "qemu-system-x86_64",
+        pacman: "qemu-system-x86",
+    },
+};
+
+const QEMU_AARCH64: Dep = Dep {
+    binary: "qemu-system-aarch64",
+    why: "the actual VM emulator (KVM acceleration on arm64)",
+    packages: Packages {
+        apt:    "qemu-system-arm",
+        dnf:    "qemu-system-aarch64",
+        apk:    "qemu-system-aarch64",
+        pacman: "qemu-system-aarch64",
+    },
+};
+
+/// All deps the running host needs, including the right qemu emulator.
+pub fn deps_for_host() -> Vec<Dep> {
+    let qemu = if crate::arch::is_arm() { QEMU_AARCH64 } else { QEMU_X86_64 };
+    let mut out: Vec<Dep> = DEPS_BASE.to_vec();
+    out.push(qemu);
+    out
+}
+
+/// Back-compat alias: tests + `tui::onboard` still reference `DEPS`. We
+/// can't constify `deps_for_host()`, so keep DEPS as the static slice and
+/// expose `deps_for_host` for actual runtime listing.
+pub const DEPS: &[Dep] = DEPS_BASE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
@@ -144,21 +174,22 @@ fn libvirtd_ok() -> bool {
 pub fn run_doctor(install: bool, assume_yes: bool) -> Result<()> {
     use crate::style as s;
     let family = Family::from_os_release();
-    println!("{} {}", s::label("Host:"), family.name());
+    println!("{} {}  ({} host)", s::label("Host:"), family.name(), crate::arch::host());
     println!();
 
-    // 1. Binary presence check
+    // 1. Binary presence check (arch-aware: picks the right qemu-system-*)
+    let deps = deps_for_host();
     println!("{}", s::label("Dependencies:"));
-    let mut missing: Vec<&Dep> = Vec::new();
+    let mut missing: Vec<Dep> = Vec::new();
     let mut virsh_present = false;
-    for d in DEPS {
+    for d in &deps {
         let present = have(d.binary);
         if d.binary == "virsh" { virsh_present = present; }
         if present {
             println!("  {} {:<22} {}", s::ok("✓"), d.binary, s::dim(d.why));
         } else {
             println!("  {} {:<22} {}", s::err("✗"), d.binary, s::dim(d.why));
-            missing.push(d);
+            missing.push(*d);
         }
     }
 

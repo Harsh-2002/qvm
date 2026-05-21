@@ -14,6 +14,7 @@ pub struct Config {
     pub network: Network,
     pub defaults: Defaults,
     pub vnc: Vnc,
+    pub tui: Tui,
     pub ssh_keys: Vec<String>,
     /// Distro registry. Key = "name:version" (docker-style).
     /// Empty = use the baked-in defaults.
@@ -58,19 +59,61 @@ pub struct Vnc {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Tui {
+    /// Theme name. `"mocha"` (dark, default) or `"latte"` (light).
+    pub theme: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Distro {
-    /// Filename under [paths].images
-    pub image: String,
     /// libosinfo id (passed with require=off, so never fatal).
     pub osinfo: String,
     /// Login shell. Default /bin/bash; Alpine uses /bin/sh.
     #[serde(default = "default_shell")]
     pub shell: String,
-    /// UEFI required for boot? (Alpine cloud image yes, others no.)
+    /// UEFI required on x86? On aarch64 UEFI is mandatory regardless.
     #[serde(default)]
     pub uefi: bool,
-    /// Download URL for `qvm pull`. Should be a STABLE release, not a daily.
-    pub url: String,
+
+    // ── Legacy single-arch form (kept for back-compat with old configs).
+    //    These are read but no longer the canonical place to put the image
+    //    name or URL. If both flat and per-arch fields are present, the
+    //    per-arch ones win.
+    #[serde(default)]
+    pub image: Option<String>,
+    #[serde(default)]
+    pub url:   Option<String>,
+
+    /// Per-architecture variants. Keys are `uname -m` values:
+    /// `"x86_64"`, `"aarch64"`. Built-ins populate both.
+    #[serde(default)]
+    pub arch:  BTreeMap<String, DistroVariant>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DistroVariant {
+    pub image: String,
+    pub url:   String,
+}
+
+impl Distro {
+    /// Resolve `(image, url)` for the given host arch (`uname -m` value).
+    /// Prefers the per-arch map; falls back to the legacy flat fields
+    /// only when the host is `x86_64`.
+    pub fn variant_for(&self, host_arch: &str) -> Result<(&str, &str)> {
+        if let Some(v) = self.arch.get(host_arch) {
+            return Ok((&v.image, &v.url));
+        }
+        if host_arch == "x86_64" {
+            if let (Some(img), Some(url)) = (self.image.as_deref(), self.url.as_deref()) {
+                return Ok((img, url));
+            }
+        }
+        Err(Error::User(format!(
+            "distro has no variant for arch '{host_arch}'. Add an `[distros.\"name\".arch.{host_arch}]` table."
+        )))
+    }
 }
 
 fn default_shell() -> String { "/bin/bash".into() }
@@ -111,6 +154,10 @@ impl Default for Vnc {
     fn default() -> Self { Self { bind: "127.0.0.1".into() } }
 }
 
+impl Default for Tui {
+    fn default() -> Self { Self { theme: "mocha".into() } }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -118,6 +165,7 @@ impl Default for Config {
             network: Network::default(),
             defaults: Defaults::default(),
             vnc: Vnc::default(),
+            tui: Tui::default(),
             ssh_keys: vec![],
             distros: builtin_distros(),
         }
@@ -127,50 +175,86 @@ impl Default for Config {
 /// Five well-known distros, all on STABLE release URLs (not dailies).
 /// These cannot be silently re-rolled by upstream into a broken VM
 /// because every qvm-created VM disk is a full copy, not an overlay.
+///
+/// Each distro carries both amd64 (`x86_64`) and arm64 (`aarch64`)
+/// variants. `pull::pull_one` and `create::run` look the right one up
+/// via `crate::arch::host()`.
 pub fn builtin_distros() -> BTreeMap<String, Distro> {
     let mut m = BTreeMap::new();
 
     m.insert("ubuntu:24.04".into(), Distro {
-        image:  "ubuntu-24.04.qcow2".into(),
         osinfo: "ubuntu24.04".into(),
         shell:  "/bin/bash".into(),
         uefi:   false,
-        url:    "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img".into(),
+        image:  None, url: None,
+        arch:   variants(&[
+            ("x86_64",  "ubuntu-24.04-amd64.qcow2",
+             "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img"),
+            ("aarch64", "ubuntu-24.04-arm64.qcow2",
+             "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img"),
+        ]),
     });
 
     m.insert("debian:13".into(), Distro {
-        image:  "debian-13.qcow2".into(),
         osinfo: "debian12".into(),
         shell:  "/bin/bash".into(),
         uefi:   false,
-        url:    "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2".into(),
+        image:  None, url: None,
+        arch:   variants(&[
+            ("x86_64",  "debian-13-amd64.qcow2",
+             "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"),
+            ("aarch64", "debian-13-arm64.qcow2",
+             "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-arm64.qcow2"),
+        ]),
     });
 
     m.insert("fedora:42".into(), Distro {
-        image:  "fedora-42.qcow2".into(),
         osinfo: "fedora41".into(),
         shell:  "/bin/bash".into(),
         uefi:   false,
-        url:    "https://download.fedoraproject.org/pub/fedora/linux/releases/42/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-42-1.1.x86_64.qcow2".into(),
+        image:  None, url: None,
+        arch:   variants(&[
+            ("x86_64",  "fedora-42-amd64.qcow2",
+             "https://download.fedoraproject.org/pub/fedora/linux/releases/42/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-42-1.1.x86_64.qcow2"),
+            ("aarch64", "fedora-42-arm64.qcow2",
+             "https://download.fedoraproject.org/pub/fedora/linux/releases/42/Cloud/aarch64/images/Fedora-Cloud-Base-Generic-42-1.1.aarch64.qcow2"),
+        ]),
     });
 
     m.insert("alpine:3.20".into(), Distro {
-        image:  "alpine-3.20.qcow2".into(),
         osinfo: "alpinelinux3.20".into(),
         shell:  "/bin/sh".into(),
         uefi:   true,
-        url:    "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/nocloud_alpine-3.20.3-x86_64-uefi-cloudinit-r0.qcow2".into(),
+        image:  None, url: None,
+        arch:   variants(&[
+            ("x86_64",  "alpine-3.20-amd64.qcow2",
+             "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/nocloud_alpine-3.20.3-x86_64-uefi-cloudinit-r0.qcow2"),
+            ("aarch64", "alpine-3.20-arm64.qcow2",
+             "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/nocloud_alpine-3.20.3-aarch64-uefi-cloudinit-r0.qcow2"),
+        ]),
     });
 
     m.insert("rocky:9".into(), Distro {
-        image:  "rocky-9.qcow2".into(),
         osinfo: "rocky9".into(),
         shell:  "/bin/bash".into(),
         uefi:   false,
-        url:    "https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2".into(),
+        image:  None, url: None,
+        arch:   variants(&[
+            ("x86_64",  "rocky-9-amd64.qcow2",
+             "https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2"),
+            ("aarch64", "rocky-9-arm64.qcow2",
+             "https://download.rockylinux.org/pub/rocky/9/images/aarch64/Rocky-9-GenericCloud-Base.latest.aarch64.qcow2"),
+        ]),
     });
 
     m
+}
+
+fn variants(rows: &[(&str, &str, &str)]) -> BTreeMap<String, DistroVariant> {
+    rows.iter().map(|(arch, img, url)| (
+        (*arch).to_string(),
+        DistroVariant { image: (*img).to_string(), url: (*url).to_string() },
+    )).collect()
 }
 
 // --- loader -----------------------------------------------------------------
@@ -192,12 +276,23 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Resolve `<images>/<filename>` for a given distro key.
+    /// Resolve `<images>/<filename>` for a given distro key, picking the
+    /// variant that matches this host's architecture.
     pub fn image_path(&self, distro: &str) -> Result<PathBuf> {
         let d = self.distros.get(distro).ok_or_else(|| Error::User(
             format!("unknown distro '{distro}'. Run `qvm distros` to list available.")
         ))?;
-        Ok(self.paths.images.join(&d.image))
+        let (image, _) = d.variant_for(crate::arch::host())?;
+        Ok(self.paths.images.join(image))
+    }
+
+    /// Same idea for the download URL.
+    pub fn image_url(&self, distro: &str) -> Result<String> {
+        let d = self.distros.get(distro).ok_or_else(|| Error::User(
+            format!("unknown distro '{distro}'. Run `qvm distros` to list available.")
+        ))?;
+        let (_, url) = d.variant_for(crate::arch::host())?;
+        Ok(url.to_string())
     }
 
     /// Per-VM disk file `<vms>/<name>.qcow2`.

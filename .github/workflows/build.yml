@@ -7,20 +7,16 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: test + static-amd64
+  test:
+    name: test (host)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (stable) + musl target
+      - name: Install Rust (stable)
         run: |
           rustup toolchain install stable --profile minimal --component clippy
-          rustup target add x86_64-unknown-linux-musl
           rustc --version
-
-      - name: Install musl toolchain
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Cache cargo registry & build
         uses: actions/cache@v4
@@ -29,7 +25,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
 
       - name: Clippy (strict)
         run: cargo clippy --release --all-targets --locked -- -D warnings
@@ -37,25 +33,70 @@ jobs:
       - name: Cargo test (release)
         run: cargo test --release --locked
 
-      - name: Cargo build (static, musl, amd64)
-        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+  build:
+    name: static-${{ matrix.short }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - short:  amd64
+            target: x86_64-unknown-linux-musl
+            apt:    musl-tools
+          - short:  arm64
+            target: aarch64-unknown-linux-musl
+            apt:    musl-tools gcc-aarch64-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable) + target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add ${{ matrix.target }}
+          rustc --version
+
+      - name: Install musl + cross-linker
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+
+      - name: Configure cargo for arm64 cross-link
+        if: matrix.short == 'arm64'
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [target.aarch64-unknown-linux-musl]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Cargo build (static, musl, ${{ matrix.short }})
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Verify binary is statically linked
         run: |
-          file target/x86_64-unknown-linux-musl/release/qvm
-          file target/x86_64-unknown-linux-musl/release/qvm | grep -q "static-pie linked\|statically linked"
-          ldd target/x86_64-unknown-linux-musl/release/qvm 2>&1 | grep -qE "not a dynamic executable|statically linked"
-          ls -lh target/x86_64-unknown-linux-musl/release/qvm
+          file target/${{ matrix.target }}/release/qvm
+          file target/${{ matrix.target }}/release/qvm | grep -q "static-pie linked\|statically linked"
+          ldd target/${{ matrix.target }}/release/qvm 2>&1 | grep -qE "not a dynamic executable|statically linked"
+          ls -lh target/${{ matrix.target }}/release/qvm
 
-      - name: Smoke test
+      - name: Smoke test (amd64 only — runner can't exec arm64)
+        if: matrix.short == 'amd64'
         run: |
-          target/x86_64-unknown-linux-musl/release/qvm --version
-          target/x86_64-unknown-linux-musl/release/qvm --help
+          target/${{ matrix.target }}/release/qvm --version
+          target/${{ matrix.target }}/release/qvm --help
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: qvm-linux-amd64-static
-          path: target/x86_64-unknown-linux-musl/release/qvm
+          name: qvm-linux-${{ matrix.short }}-static
+          path: target/${{ matrix.target }}/release/qvm
           if-no-files-found: error
           retention-days: 30

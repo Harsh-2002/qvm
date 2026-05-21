@@ -1,6 +1,11 @@
+pub mod cleanup;
 pub mod completions;
+pub mod console;
 pub mod create;
 pub mod delete;
+pub mod export;
+pub mod flatten;
+pub mod import;
 pub mod doctor;
 pub mod images;
 pub mod info;
@@ -8,4 +13,5 @@ pub mod init;
 pub mod lifecycle;
 pub mod pull;
 pub mod resources;
+pub mod snap;
 pub mod vnc;

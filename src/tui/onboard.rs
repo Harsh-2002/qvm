@@ -316,11 +316,27 @@ fn handle_key(
                 app.bridge_custom.backspace();
             }
             KeyCode::Enter => {
-                if app.bridge().is_empty() {
+                let name = app.bridge();
+                if name.is_empty() {
                     app.flash = Some(("Bridge name cannot be empty.".into(), false));
+                } else if !bridge_exists(&name) {
+                    // Soft warning: bridge name doesn't appear in /sys/class/net.
+                    // Permit override on 'y' so installs from scripts (or
+                    // pre-configured bridges that don't show until libvirt
+                    // starts) still work.
+                    app.flash = Some((
+                        format!("Bridge '{name}' not found on this host. Press [y] to use it anyway."),
+                        false,
+                    ));
                 } else {
                     app.step = app.step.next();
+                    app.flash = None;
                 }
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y')
+                if app.flash.is_some() && !app.bridge().is_empty() => {
+                    app.step = app.step.next();
+                    app.flash = None;
             }
             _ => {}
         },
@@ -362,7 +378,31 @@ fn handle_key(
             KeyCode::Home      => { focused_path(app).home(); }
             KeyCode::End       => { focused_path(app).end(); }
             KeyCode::Char(c)   => { focused_path(app).insert(c); }
-            KeyCode::Enter     => { app.step = app.step.next(); }
+            KeyCode::Enter     => {
+                // Validate all three paths are writable. mkdir + touch +
+                // unlink is the cheap end-to-end check: it catches
+                // read-only mounts, missing permissions, and full disks.
+                let dirs = [
+                    ("images",    app.images_path.value.trim().to_string()),
+                    ("vms",       app.vms_path.value.trim().to_string()),
+                    ("cloudinit", app.cloudinit_path.value.trim().to_string()),
+                ];
+                let mut err: Option<String> = None;
+                for (label, path) in &dirs {
+                    if path.is_empty() {
+                        err = Some(format!("{label} path cannot be empty."));
+                        break;
+                    }
+                    if let Err(e) = check_writable(Path::new(path)) {
+                        err = Some(format!("{label} path '{path}': {e}"));
+                        break;
+                    }
+                }
+                match err {
+                    Some(e) => app.flash = Some((e, false)),
+                    None    => { app.step = app.step.next(); app.flash = None; }
+                }
+            }
             _ => {}
         },
         StepKind::FirstImage => match k.code {
@@ -376,10 +416,23 @@ fn handle_key(
             KeyCode::Char(' ') => { app.skip_first_pull = !app.skip_first_pull; }
             KeyCode::Enter => {
                 if !app.skip_first_pull {
-                    // Suspend ratatui so the streaming download's progress
-                    // bar (from pull::pull_one) renders cleanly.
                     let distro = app.distro_choices[app.distro_sel].clone();
                     let cfg = build_partial_cfg(app);
+                    // Quick HEAD-request to fail fast on DNS / firewall
+                    // problems before downloading a gigabyte. Uses the
+                    // same ureq client as pull::pull_one.
+                    if let Ok(url) = cfg.image_url(&distro) {
+                        app.flash = Some((format!("Checking {url} …"), true));
+                        if let Err(e) = url_reachable(&url) {
+                            app.flash = Some((
+                                format!("{url} is unreachable: {e}. Press [Space] to skip pulling."),
+                                false,
+                            ));
+                            return Ok(());
+                        }
+                    }
+                    // Suspend ratatui so the streaming download's progress
+                    // bar (from pull::pull_one) renders cleanly.
                     let result = suspend(terminal, || {
                         println!("Pulling {distro}...");
                         pull::pull_one(&cfg, &distro)
@@ -831,6 +884,48 @@ fn centered_paragraph(f: &mut Frame, area: Rect, lines: Vec<Line<'_>>) {
 }
 
 // ── helpers (host detection) ─────────────────────────────────────────────────
+
+/// Does `/sys/class/net/<name>/bridge` exist? Used by the Network step
+/// to warn the user when they enter a bridge name we can't see locally.
+/// libvirt-managed bridges sometimes don't show in /sys until libvirtd
+/// runs, so we treat this as a soft warning rather than a hard block.
+fn bridge_exists(name: &str) -> bool {
+    let p = format!("/sys/class/net/{name}/bridge");
+    std::path::Path::new(&p).is_dir()
+}
+
+/// Create `path` if missing, then touch a probe file inside and remove it.
+/// Returns the first OS error encountered. Pure side-effect test — leaves
+/// `path` behind so `ensure_dirs` doesn't re-create it later.
+fn check_writable(path: &std::path::Path) -> std::result::Result<(), String> {
+    std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
+    let probe = path.join(".qvm-write-test");
+    std::fs::write(&probe, b"qvm").map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+/// Best-effort reachability check for a distro URL. Uses our embedded
+/// HTTPS client (`ureq`) with a short timeout. Network problems (DNS,
+/// firewall) surface here in ~2s instead of after a 1 GB partial download.
+fn url_reachable(url: &str) -> std::result::Result<(), String> {
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(5)))
+        .build()
+        .new_agent();
+    // HEAD is cheap; most cloud-image mirrors support it.
+    match agent.head(url).call() {
+        Ok(resp) => {
+            let s = resp.status();
+            if s.is_success() || s.is_redirection() {
+                Ok(())
+            } else {
+                Err(format!("HTTP {s}"))
+            }
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
 
 fn detect_bridges() -> Vec<String> {
     let Ok(rd) = std::fs::read_dir("/sys/class/net") else { return vec![]; };
