@@ -64,9 +64,9 @@ printf 'yes\n' | "${INSTALL_DIR}/qvm" doctor --install || true
 
 # ---------- 3 + 4. first-run setup + download all base images ----------------
 
-info "Running qvm init --pull-all (config, dirs, and all 5 distro images)..."
+info "Running qvm init --yes --pull-all (config, dirs, and all 5 distro images)..."
 info "This may take several minutes depending on your connection."
-"${INSTALL_DIR}/qvm" init --pull-all
+"${INSTALL_DIR}/qvm" init --yes --pull-all
 ok "Setup complete."
 
 # ---------- 5. shell completions ---------------------------------------------
