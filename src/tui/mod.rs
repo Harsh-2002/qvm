@@ -42,10 +42,13 @@ pub use app::{App, Mode};
 /// propagates).
 pub fn run(cfg: &Config) -> Result<()> {
     // Panic hook: any panic during render would leave the user in raw mode
-    // with their cursor hidden. Install a hook that ALWAYS restores the
-    // terminal first, then chains to the previous hook.
+    // with their cursor hidden AND mouse capture on (which spams escape
+    // sequences at the next shell prompt whenever the mouse moves).
+    // ALL three must be undone, in roughly reverse-enable order. These
+    // are idempotent — calling them when never enabled is a no-op.
     let original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(stdout(), DisableMouseCapture);
         let _ = disable_raw_mode();
         let _ = execute!(stdout(), LeaveAlternateScreen, Show);
         original(info);
@@ -244,8 +247,17 @@ fn handle_action(
     Ok(())
 }
 
-/// Release the terminal so a child process (virsh console, qemu-img convert)
-/// can render normally with progress bars, then restore the TUI on return.
+/// Release the terminal so a child process (virsh console, qemu-img convert,
+/// websockify, ssh) can render normally with progress bars, then restore
+/// the TUI on return.
+///
+/// **Disabling mouse capture FIRST is load-bearing.** If the child gets
+/// Ctrl-C'd, SIGINT propagates to qvm (because raw mode is off during
+/// suspend, so Ctrl-C is a real signal). qvm dies without running the
+/// shutdown path — but at least mouse capture is already off, so the
+/// shell prompt isn't left spewing `^[[<35;X;YM` for every mouse move.
+/// Discovered in production: `qvm vnc --browser` Ctrl-C'd by user, then
+/// the shell prompt is unusable until they run `reset`.
 fn suspend<F, R>(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     f: F,
@@ -253,11 +265,12 @@ fn suspend<F, R>(
 where
     F: FnOnce() -> R,
 {
+    let _ = execute!(stdout(), DisableMouseCapture);
     let _ = disable_raw_mode();
     let _ = execute!(stdout(), LeaveAlternateScreen, Show);
     let r = f();
     let _ = enable_raw_mode();
-    let _ = execute!(stdout(), EnterAlternateScreen, Hide);
+    let _ = execute!(stdout(), EnterAlternateScreen, Hide, EnableMouseCapture);
     let _ = terminal.clear();
     r
 }

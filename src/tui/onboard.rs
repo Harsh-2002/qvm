@@ -22,7 +22,7 @@ use crate::tui::theme::Theme;
 
 use crossterm::{
     cursor::{Hide, Show},
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, DisableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{
         disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -178,9 +178,12 @@ impl OnboardApp {
 
 pub fn run(cfg_path: &Path) -> Result<()> {
     // Install the same panic hook as the main TUI so a crash never leaves
-    // the terminal in raw mode.
+    // the terminal in raw mode. DisableMouseCapture is defensive — onboard
+    // doesn't enable mouse capture today but if a child suspend() path is
+    // ever added it'll need this for the same reason as tui::run.
     let original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(stdout(), DisableMouseCapture);
         let _ = disable_raw_mode();
         let _ = execute!(stdout(), LeaveAlternateScreen, Show);
         original(info);
