@@ -140,7 +140,7 @@ See [§ 2](#2-the-disaster-that-birthed-this-tool) for the why. Mechanically:
   `qemu-img resize -q <vm> <size>G`.
 - The `-b` flag is **never** present in any `qemu-img create` call
   anywhere in the source. A grep of the source for `qemu-img.*-b` returns
-  zero results. The integration test `test/05-self-contained.sh`
+  zero results. The integration test `integration/05-self-contained.sh`
   enforces this.
 
 A new VM disk holds the full base contents. From that moment, it is
@@ -356,13 +356,13 @@ tests/
     ├── libvirt_tests.rs     parse_vnc_display — pure parser, no virsh needed.
     └── tui_app_tests.rs     App::new starts in EmptyState; toast variants.
 
-test/                       (single 't' — INTEGRATION tests, run manually)
+integration/                INTEGRATION (bash smoke tests, run manually)
     ├── 05-self-contained.sh Most important. Verifies VM disks have NO backing
     │                        file (enforces invariant 3.1 against regression).
     └── …others              create/start/stop/delete end-to-end on a real host.
 ```
 
-The `tests/` (plural) and `test/` (singular) distinction is deliberate.
+`tests/` (cargo) vs `integration/` (bash) is deliberate.
 See [§ 15](#15-test-strategy).
 
 ---
@@ -1122,15 +1122,16 @@ Two separate test suites, deliberately split:
 - No libvirt, no genisoimage, no network required.
 - Runs in CI on every push.
 
-### 15.2 `test/` (singular — note the missing 's') — integration tests
+### 15.2 `integration/` — bash smoke tests
 
 - Bash scripts that exercise the *installed* `qvm` binary against a
-  real libvirt host with KVM.
+  real libvirt host with KVM. (Formerly `test/` — renamed to avoid
+  confusion with Cargo's `tests/`.)
 - Actually create VMs, wait for them to boot, ssh in, delete them.
 - Each script self-cleans (via `trap EXIT`).
-- The most important one is `test/05-self-contained.sh`: it confirms
-  that VM disks have **no backing file**. If this regresses, we're
-  back to the Dev/Hermes disaster mode of [§ 2](#2-the-disaster-that-birthed-this-tool).
+- The most important one is `integration/05-self-contained.sh`: it
+  confirms that VM disks have **no backing file**. If this regresses,
+  we're back to the Dev/Hermes disaster mode of [§ 2](#2-the-disaster-that-birthed-this-tool).
 - **Not** run in CI. Run them manually after deploying to a new host,
   upgrading libvirt/qemu/kernel, or touching create/delete/cloudinit.
 

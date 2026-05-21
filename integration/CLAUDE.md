@@ -1,6 +1,7 @@
-# test/CLAUDE.md
+# integration/CLAUDE.md
 
-Manual integration tests for `qvm`.
+Manual integration tests for `qvm`. (Formerly `test/`; renamed to avoid
+confusion with Cargo's `tests/` directory.)
 
 These tests **must be run on a real KVM-capable host with libvirt installed**.
 The unit tests in `tests/` (the cargo-level test suite) cover everything that
@@ -28,7 +29,7 @@ production VMs on a new host.
 ## What's here
 
 ```
-test/
+integration/
 ├── CLAUDE.md            this file
 ├── README.md            short user-facing version
 ├── run-all.sh           orchestrator: runs every test, summarises
@@ -45,14 +46,14 @@ test/
 ## Running
 
 ```bash
-sudo ./test/run-all.sh
+sudo ./integration/run-all.sh
 ```
 
 Or one at a time:
 
 ```bash
-sudo ./test/01-doctor.sh
-sudo ./test/03-create-debian.sh
+sudo ./integration/01-doctor.sh
+sudo ./integration/03-create-debian.sh
 ```
 
 Each script is **self-contained** and idempotent: starts with a known

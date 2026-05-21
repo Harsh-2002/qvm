@@ -50,23 +50,40 @@ pull while VMs exist" to someone (including future you) at 2 AM.
 
 ### In scope
 
-- Create / start / stop / restart / kill / delete VMs
-- List, inspect, get IP, get an SSH command
-- Pull and list distro base images (5 baked in, more via config)
+- Create / start / stop / restart / kill / delete VMs (single-name **and**
+  multi-name batch: `qvm stop a b c` or `qvm stop --all`)
+- List, inspect, get IP, get an SSH command, and **`qvm ssh <vm>`** that
+  exec's ssh directly instead of just printing the command
+- `--json` output on `qvm ls`, `qvm distros`, `qvm images` for automation
+- Pull and list distro base images (5 baked in, more via config) — each
+  with **both amd64 and arm64 variants**
 - VNC connection info (replaces the need for Cockpit for graphical access)
 - Resource changes (CPU, RAM, disk grow)
-- One-time setup: `qvm init` writes a sample config and (optionally)
-  downloads the baseline image set
-- **Interactive TUI** (bare `qvm` with no subcommand) — a Proxmox-style
-  split-pane: persistent sidebar listing VMs, contextual content pane
-  (detail / inline create form / help / empty), and a status bar with
-  contextual hints and inline confirms for destructive actions. The CLI
-  remains the source of truth; the TUI is a thin presenter that delegates
-  to the same `commands::*` functions the CLI uses.
+- **`qvm console <name>`** — drops into `virsh console` with proper TTY
+  inheritance (Ctrl-] to detach)
+- **`qvm snap {create,list,revert,rm,rotate}`** — passthrough over
+  `virsh snapshot-*` with `--quiesce` / `--running` / `--keep N`
+- **`qvm export`/`qvm import`** — package a VM into a `.qvm.tar` tarball
+  (qcow2 + cloud-init seed + `.vmuser` sidecar + `qvm-meta.toml` with
+  sha256). Live mode uses `snapshot-create-as --disk-only --quiesce` +
+  `blockcommit --active --pivot` (crash-consistent, no downtime).
+  Import refuses cross-arch via a `uname -m` check.
+- **`qvm flatten <name>`** — `qemu-img convert` in place. Migration aid
+  for VMs created by the bash predecessor.
+- **`qvm cleanup`** — finds qcow2 / seed / sidecar files with no matching
+  libvirt domain and removes them after confirmation. The TUI header
+  surfaces a non-blocking "N orphans" hint on startup.
+- One-time setup: `qvm init` launches the TUI onboarding wizard. `--yes`
+  writes default config silently for automation. `--force` overwrites.
+- **Interactive TUI** (bare `qvm` with no subcommand) — Proxmox-style
+  split-pane with sidebar, contextual content, status bar. Background
+  refresh worker (mpsc channel) keeps the UI responsive while libvirt
+  is queried. Themes: Catppuccin Mocha (dark, default) + Latte (light).
 - **`qvm vnc --browser`** — spawns a `websockify` + noVNC bridge for the
   one thing browsers genuinely do better than terminals: render the VM's
   framebuffer.
-- A single static `amd64` binary; no daemon, no extra runtime
+- **amd64 + arm64**: single static musl binary per arch. CI matrix builds
+  both. `install.sh` switches on `uname -m`.
 
 ### Explicitly out of scope
 
@@ -74,9 +91,8 @@ These are excluded by design, not by accident. Do **not** add them without
 re-reading section 1 and considering whether the tool is sprawling.
 
 - Multi-host / clustering / federation
-- Live migration
-- Snapshots beyond what `virsh snapshot-*` already does (a thin passthrough
-  would be acceptable; we won't reinvent it)
+- Live migration (snapshot-based **export/import** is in scope; moving a
+  running domain between hosts is not)
 - Storage pools / LVM / Ceph / anything other than qcow2 files in a
   configurable directory
 - **Web admin UI for VM management.** We tried it (commits 694e16d…acf3603)
@@ -88,6 +104,10 @@ re-reading section 1 and considering whether the tool is sprawling.
 - Image building or Packer-style workflows
 - Container support (this is a VM tool)
 - Automatic mirror selection / geo-pinning
+- **Cross-arch emulation** (running x86 guests on ARM hosts via qemu TCG).
+  The import path explicitly refuses on arch mismatch and tells the user
+  to reinstall on the target arch.
+- OVA / VMDK formats. `.qvm.tar` stays transparent and `tar tf`-inspectable.
 
 If you want one of these, fork it. A small tool that does its job is more
 valuable than a Swiss-Army knife that no one understands.
@@ -129,48 +149,83 @@ These are non-negotiable and reflected in tests:
 
 ```
 src/
-├── main.rs            CLI dispatch (clap). Trivial - all logic in commands/.
+├── main.rs            CLI dispatch (clap). Trivial — all logic in commands/.
 ├── lib.rs             Library surface so the test suite can exercise modules.
 ├── error.rs           One Result type. Two variants: User (printed plain),
 │                      Command (with stderr). No anyhow soup.
 ├── cmd.rs             The ONLY layer that touches external processes.
-│                      run() / run_inherit() / require() / exec().
+│                      run() / run_inherit() / run_tty() / exec().
+├── arch.rs            Host arch detection (uname -m, normalized). Picks
+│                      qemu_system_bin() + drives ARM-only virt-install flags.
 ├── libvirt.rs         Thin virsh wrapper. exists/is_running/start/stop/...
 │                      ipv4() looks via agent, then DHCP lease, then ARP.
 │                      undefine() handles UEFI NVRAM correctly.
 ├── config.rs          TOML schema, baked-in defaults, distro registry.
-│                      Five built-in distros. User config layers over top.
+│                      Five built-in distros, each with per-arch variants
+│                      (x86_64 + aarch64). User config layers over top.
 ├── cloudinit.rs       Seed generator. write_files() then build_iso().
 │                      Split so tests can exercise file generation without
 │                      needing genisoimage.
+├── style.rs           CLI ANSI colors via owo-colors. Honors NO_COLOR + TTY.
 ├── util.rs            Validation (vm name, username), random username,
 │                      SHA-512 password hashing.
 └── commands/
-    ├── init.rs        First-run: write config, prep dirs, optionally pull
-    │                  all images.
-    ├── pull.rs        Atomic image download (write to .partial, mv on
-    │                  success). Exposes `pull_one()` so create.rs can
-    │                  auto-pull on demand.
-    ├── create.rs      The interesting one. Reads distro, generates seed,
-    │                  full-copies the base, runs virt-install --import.
-    │                  Auto-pulls the base image if missing.
+    ├── init.rs        First-run wrapper. Delegates to tui::onboard for the
+    │                  interactive flow, or writes defaults silently for --yes.
+    ├── pull.rs        Atomic image download via embedded ureq HTTPS client
+    │                  (no external wget). Exposes pull_one() for create.
+    ├── create.rs      Reads distro+arch, generates seed, full-copies the base,
+    │                  runs virt-install --import. Auto-pulls on missing image.
+    │                  Adds --arch aarch64 --machine virt --boot uefi on ARM.
     ├── delete.rs      Stops, undefines (handles UEFI nvram), removes files,
     │                  verifies, reports honestly if libvirt still has it.
-    ├── lifecycle.rs   start/stop/restart/kill - one-line virsh passthroughs.
-    ├── info.rs        ls / inspect / ip / ssh-cmd.
-    ├── images.rs      distros / images listings.
+    ├── lifecycle.rs   Verb enum (Start/Stop/Restart/Kill) + batch() helper
+    │                  so `qvm stop a b c` and `qvm stop --all` work.
+    ├── console.rs     `qvm console <name>` — thin run_tty("virsh", ["console", n]).
+    ├── cleanup.rs     `qvm cleanup` — finds qcow2 / seed-iso / seed-dir
+    │                  files with no matching libvirt domain. Also exposed
+    │                  to the TUI which renders an "N orphans" header hint.
+    ├── flatten.rs     `qvm flatten <name>` — qemu-img convert in place.
+    │                  Migration aid for VMs from the bash predecessor.
+    ├── snap.rs        snapshot-create-as / list / revert / delete / rotate.
+    │                  rotate --keep N parses snapshot-list by creation order.
+    ├── export.rs      `qvm export` — packages a VM into .qvm.tar with
+    │                  disk.qcow2, cloud-init.iso, .vmuser, domain.xml, and
+    │                  qvm-meta.toml (arch, cpus, memory, sha256). Live mode
+    │                  uses snapshot-create-as --disk-only --quiesce +
+    │                  blockcommit --active --pivot.
+    ├── import.rs      `qvm import` — extracts a tarball, verifies sha256,
+    │                  refuses cross-arch, rebuilds the domain via
+    │                  virt-install --import with --cpu host-model.
+    ├── info.rs        ls (--json) / inspect / ip / ssh-cmd / ssh-exec.
+    ├── images.rs      distros (--json) / images (--json) listings.
     ├── resources.rs   set-cpu / set-ram / resize-disk.
+    ├── doctor.rs      Host dependency check. Arch-aware (picks qemu-system-X).
+    │                  deps_for_host() builds the DEPS slice at runtime.
+    ├── completions.rs Shell completion script (bash/zsh/fish/elvish/pwsh).
     └── vnc.rs         Prints the connect string (canonical `host:display`
                        AND explicit `host::port` forms — most viewers reject
                        the port-only form). --open launches a local viewer.
+                       --browser starts a websockify + noVNC bridge with QR.
 
 src/tui/
     ├── mod.rs         Terminal init/teardown, panic-hook, main event loop.
+    │                  Spawns a background refresh worker via mpsc channel.
     │                  Only file that touches raw mode.
     ├── app.rs         State machine + apply() dispatch. Pure logic.
-    ├── ui.rs          Pure render functions for table, modals, popups.
+    │                  refresh() = sync (post-action); apply_async_refresh()
+    │                  consumes results from the worker.
+    ├── refresh.rs     Background worker thread. Sleeps 2s, sends Starting +
+    │                  Result(rows, selected_dominfo) on the channel.
+    ├── ui.rs          Pure render functions for sidebar/detail/header/bar.
     ├── events.rs      Crossterm key events → Action enum.
-    └── forms.rs       Minimal text-input helper (avoids tui-input dep).
+    ├── forms.rs       Minimal text-input helper (avoids tui-input dep).
+    ├── theme.rs       Catppuccin Mocha (default) + Latte (light), selected
+    │                  from [tui] theme = "mocha"|"latte" in config.
+    └── onboard.rs     First-run TUI wizard. 7 steps: welcome, host-check,
+                       network (bridge validation), ssh keys, paths
+                       (writability check), first image (HEAD reachability
+                       check), done. Reuses commands::init::render_config.
 
 ```
 
@@ -376,16 +431,25 @@ Static, portable binary (what CI produces and what should be installed on
 target hosts):
 
 ```
+# amd64
 rustup target add x86_64-unknown-linux-musl
-sudo apt install musl-tools     # on Debian/Ubuntu build hosts
+sudo apt install musl-tools
 cargo build --release --target x86_64-unknown-linux-musl
-file target/x86_64-unknown-linux-musl/release/qvm
-# -> "static-pie linked"
+
+# arm64 (cross from an amd64 host)
+rustup target add aarch64-unknown-linux-musl
+sudo apt install musl-tools gcc-aarch64-linux-gnu
+# .cargo/config.toml: [target.aarch64-unknown-linux-musl] linker = "aarch64-linux-gnu-gcc"
+cargo build --release --target aarch64-unknown-linux-musl
 ```
 
-The CI in `.github/workflows/build.yml` runs the test suite and produces a
-`qvm-linux-amd64-static` artifact on every push and PR. It deliberately
-does **not** create a GitHub release — that's a manual decision for now.
+The CI in `.github/workflows/build.yml` is a matrix that builds **both**
+`qvm-linux-amd64-static` and `qvm-linux-arm64-static` artifacts on every
+push and PR. A separate cleanup job prunes everything but the newest two
+artifacts per name, so storage doesn't grow unbounded.
+
+CI deliberately does **not** create a GitHub release — that's a manual
+decision for now.
 
 ---
 
@@ -393,37 +457,40 @@ does **not** create a GitHub release — that's a manual decision for now.
 
 A few things that look like missed opportunities but are intentional:
 
-- **No `qvm console` CLI subcommand.** The in-TUI `e` action drops you
-  into `virsh console <name>` with suspend/restore handled cleanly. CLI
-  users can still run `virsh console <name>` directly. A thin `qvm
-  console` wrapper would be a small addition if anyone wants it.
 - **`qvm vnc` prints info; doesn't proxy a connection.** Adding a TLS
-  proxy or websocket bridge would be a real feature; not in scope. The
-  default is to bind VNC to 127.0.0.1 and tunnel via SSH. The connect
-  string is printed in both `host:display` (canonical) and `host::port`
-  (explicit) forms because viewers disagree on which they accept.
-- **No `qvm export` / `qvm import` yet.** These are the qemu-nbd-based
-  data-extraction commands the user did manually during the disaster
-  recovery. They're high-value future additions. The pattern (mount
-  via qemu-nbd, rsync /root /home /opt /srv /var/lib/docker/volumes
-  /etc-selected) is well-tested manually.
-- **No `qvm flatten` command yet.** This would detach an existing
-  overlay-based VM from its backing file (the recovery operation for VMs
-  created by the old bash tool). For now, the equivalent manual command is
-  documented in the README.
-- **`qvm init` IS interactive.** Earlier versions deliberately had no
-  wizard; the Rust version now ships one because the config has enough
-  knobs (bridge, paths, SSH keys, default password hash) that asking
-  questions is faster than asking the user to learn the TOML schema.
-  Silent mode is still available via `qvm init --yes`.
+  proxy or generic websocket bridge would be a real feature; out of
+  scope. The default is to bind VNC to 127.0.0.1 and tunnel via SSH.
+  The connect string is printed in both `host:display` (canonical) and
+  `host::port` (explicit) forms because viewers disagree on which they
+  accept. `qvm vnc --browser` is the one exception — it spawns
+  websockify + noVNC because rendering a framebuffer is the one thing
+  the browser does better than a terminal.
+- **`qvm init` is INTERACTIVE.** It launches the TUI onboarding wizard
+  (`src/tui/onboard.rs`). The text-mode wizard that used to live here
+  is gone — feedback was that it was the worst onboarding the user had
+  seen. `--yes` writes default config silently for automation;
+  `--force` overwrites an existing config.
 - **`qvm` with no subcommand opens the TUI.** Proxmox-style split-pane
-  with sidebar + contextual content + status bar. See section 5's "Why
-  the TUI was redesigned" for the design history.
+  with sidebar + contextual content + status bar. The refresh worker
+  runs on a background thread (mpsc channel) so the UI never blocks on
+  virsh. See section 5's "Why the TUI was redesigned" for the design
+  history.
 - **`qvm web` was tried and removed.** A full server-rendered management
   UI shipped briefly (commits 694e16d–acf3603) but the TUI was the
   better home for management. `qvm vnc --browser` covers the only
   case where a browser actually wins — rendering the VM framebuffer.
   See section 5's "Why the web management UI was removed".
+- **Cross-arch import is refused, not emulated.** The qcow2 disk holds
+  a kernel binary for a specific architecture; you cannot move an amd64
+  guest to an arm64 host and expect it to boot. `qvm-meta.toml` records
+  the source arch and import fails fast with a clear message pointing
+  at "reinstall on the target arch". Cross-arch via qemu TCG emulation
+  is technically possible but performance is unusable for real work.
+- **`qvm export` live mode uses `blockcommit --pivot`.** If pivot fails
+  mid-way the VM is left running on the overlay file; we don't
+  silently recover. The error tells the user exactly which file the VM
+  is on and how to merge manually. Defaulting to silent recovery would
+  hide a degraded-state bug that needs eyeballs.
 
 ---
 
@@ -434,7 +501,8 @@ Two commands exist purely to make the host setup experience humane:
 ### `qvm doctor` / `qvm doctor --install`
 
 Checks the 5 external binaries qvm depends on (virsh, virt-install,
-qemu-img, qemu-system-x86_64, genisoimage) and verifies libvirtd is
+qemu-img, the right qemu-system-* for the host arch via
+`arch::qemu_system_bin()`, genisoimage) and verifies libvirtd is
 reachable. If anything is missing:
 
 - Without `--install`: prints the exact install command for the host
@@ -469,12 +537,12 @@ and run in different places. Don't merge them.
 - No libvirt, no genisoimage, no network required.
 - Runs in CI on every push.
 
-### `test/` (single 't', not plural) — integration tests, run manually on real host
+### `integration/` — bash smoke tests, run manually on a real KVM host
 
 - Bash scripts that exercise the installed `qvm` binary against a real
   libvirt host with KVM.
 - Actually create VMs, wait for them to boot, ssh in, delete them.
-- See `test/CLAUDE.md` for the full design and contribution rules.
+- See `integration/CLAUDE.md` for the full design and contribution rules.
 - Each script is self-contained and cleans up its own VMs (success or
   failure, via trap EXIT).
 - **Not run in CI.** Run them after installing on a new host, or after
@@ -484,8 +552,9 @@ and run in different places. Don't merge them.
   disaster mode.
 
 If you're tempted to merge these two suites, don't. The split is
-deliberate: `cargo test` should be fast and side-effect-free; integration
-tests should be honest about what they need.
+deliberate: `cargo test` (in `tests/`) should be fast and side-effect-
+free; the bash smoke tests (in `integration/`) should be honest about
+what they need.
 
 ---
 

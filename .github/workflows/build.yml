@@ -6,6 +6,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# `prune` needs actions:write to delete old artifacts; everything else
+# is happy with the default read-only token.
+permissions:
+  contents: read
+  actions:  write
+
 jobs:
   test:
     name: test (host)
@@ -99,4 +105,41 @@ jobs:
           name: qvm-linux-${{ matrix.short }}-static
           path: target/${{ matrix.target }}/release/qvm
           if-no-files-found: error
-          retention-days: 30
+          # Hard cap. The prune job below also keeps only the two
+          # newest per name, but this is a backstop in case the prune
+          # job is ever skipped (PRs, manual cancellations).
+          retention-days: 14
+
+  prune:
+    # Keep only the two newest artifacts per name. Without this, every
+    # successful push leaves behind two more artifacts (one per arch)
+    # for the full retention window, and storage usage drifts up
+    # forever. Two-newest gives "current + one rollback step".
+    name: prune old artifacts
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete all but the 2 newest per artifact name
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          # List every artifact (paginated), group by name, drop the
+          # two newest in each group, output the rest's IDs.
+          ids="$(gh api -X GET "/repos/${REPO}/actions/artifacts" --paginate \
+            --jq '.artifacts
+                  | group_by(.name)
+                  | map(sort_by(.created_at) | reverse | .[2:])
+                  | flatten
+                  | .[].id')"
+          if [ -z "$ids" ]; then
+            echo "Nothing to prune."
+            exit 0
+          fi
+          echo "Pruning $(echo "$ids" | wc -l) old artifact(s)..."
+          for id in $ids; do
+            echo "  delete artifact $id"
+            gh api -X DELETE "/repos/${REPO}/actions/artifacts/${id}" || true
+          done
