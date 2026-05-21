@@ -61,6 +61,11 @@ pull while VMs exist" to someone (including future you) at 2 AM.
   dashboard for users who prefer browsing over typing. The CLI remains the
   source of truth; the TUI is a thin presenter that delegates to the same
   `commands::*` functions the CLI uses.
+- **Minimal responsive web UI** (`qvm web`) — same shape as the TUI but in
+  a browser, for managing VMs from a phone or another machine on the LAN.
+  Foreground process, no daemon, no auth (operator-launched on demand,
+  defaults to 127.0.0.1). Embedded HTTP server, server-rendered HTML, on-
+  demand websockify+noVNC bridge per VM console.
 - A single static `amd64` binary; no daemon, no extra runtime
 
 ### Explicitly out of scope
@@ -74,10 +79,11 @@ re-reading section 1 and considering whether the tool is sprawling.
   would be acceptable; we won't reinvent it)
 - Storage pools / LVM / Ceph / anything other than qcow2 files in a
   configurable directory
-- Web UI (we're replacing Cockpit; adding another would defeat the
-  point). The terminal TUI is in scope; a *web* UI is not.
-- VNC proxy / noVNC integration — qvm prints connect info only. Use
-  `websockify` externally if you want browser access.
+- Persistent / daemonised web service. `qvm web` runs in the foreground
+  while the operator is using it and exits on Ctrl-C. Anything that needs
+  a background-running web app belongs in Cockpit or a separate tool.
+- Authentication, TLS, multi-user access on the web UI. Trusted-LAN only,
+  defaults to 127.0.0.1, no exceptions.
 - User management or multi-tenant access (single root-owned tool)
 - Image building or Packer-style workflows
 - Container support (this is a VM tool)
@@ -165,6 +171,15 @@ src/tui/
     ├── ui.rs          Pure render functions for table, modals, popups.
     ├── events.rs      Crossterm key events → Action enum.
     └── forms.rs       Minimal text-input helper (avoids tui-input dep).
+
+src/web/
+    ├── mod.rs         tiny_http server, route dispatch, per-VM websockify
+    │                  session bookkeeping (killed on Ctrl-C via Drop).
+    ├── templates.rs   HTML rendering as Rust string-returning functions.
+    │                  No templating engine; uses include_str! for static.
+    ├── assets.rs      Embeds style.css + app.js via include_str!.
+    ├── style.css      ~5 KB of CSS. Mobile-responsive grid + dark theme.
+    └── app.js         ~30 LOC vanilla JS for 2-sec VM-list refresh.
 ```
 
 ---
@@ -215,6 +230,31 @@ Maximum performance, nested virtualization works automatically if the host
 supports it. The only thing it loses you is live migration across CPUs of
 different models — and migration is out of scope (see section 2). For a
 single-host homelab tool this is strictly better than `host-model`.
+
+### Why a web UI exists despite the original "no web UI" rule
+
+This was the second reversal of the original "minimal CLI only" stance,
+right after the TUI (see next section). The reasoning is the same in
+spirit but a step further: not every user wants to SSH in to use a
+terminal. From a phone, a tablet, or a coworker's laptop, browsing to
+`http://host:8080` is faster than `ssh host && qvm`.
+
+The fence we draw is at **operator-launched on demand**. `qvm web` is a
+foreground process you start when you want it and Ctrl-C when you're
+done — exactly like `qvm vnc --browser`. There is no background service,
+no init unit, no systemd. There is also no authentication and no TLS,
+because the design contract is "loopback by default, trusted LAN if you
+override". Add either of those and you're now competing with Cockpit,
+which is a project that already does it well.
+
+The web UI shares all logic with the CLI and TUI via `commands::*`.
+There is no parallel state, no separate API model. If the CLI adds a
+new operation, exposing it in the web UI is a 5-line template change.
+
+VNC consoles are wired by spawning `websockify` on demand (one process
+per VM, tracked in a session map, killed on shutdown). The iframe loads
+the noVNC bundle that ships with the distro `novnc` package — qvm
+doesn't carry its own copy, to keep the binary small.
 
 ### Why a TUI now, after originally swearing it off
 
