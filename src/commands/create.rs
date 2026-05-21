@@ -154,12 +154,22 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     if autostart { libvirt::autostart_on(&name)?; }
 
     // --- summary ---
+    use crate::style as s;
     println!();
-    println!("VM '{name}' created.");
-    println!("  distro {distro}   cpus {cpus}   ram {ram_gb}G   disk {disk_gb}G   user {user}");
-    if !nested { println!("  nested virtualization: disabled"); }
+    println!("{} {}", s::ok("✓"), s::ok(format!("VM '{name}' created")));
+    println!(
+        "  {} {distro}   {} {cpus}   {} {ram_gb}G   {} {disk_gb}G   {} {user}",
+        s::label("distro"),
+        s::label("cpus"),
+        s::label("ram"),
+        s::label("disk"),
+        s::label("user"),
+    );
+    if !nested {
+        println!("  {} {}", s::label("nested virtualization:"), s::warn("disabled"));
+    }
     println!();
-    println!("  qvm ip {name}        # address (wait ~30s for boot)");
-    println!("  qvm ssh-cmd {name}   # ssh command");
+    println!("  {} {name}        {}", s::cmd("qvm ip"),      s::dim("# address (wait ~30s for boot)"));
+    println!("  {} {name}   {}",      s::cmd("qvm ssh-cmd"), s::dim("# ssh command"));
     Ok(())
 }

@@ -115,29 +115,32 @@ fn print_qr(url: &str) {
 }
 
 fn print_info(name: &str, bind: &str, ep: VncEndpoint) {
+    use crate::style as s;
     let host = host_label().unwrap_or_else(|| "this-host".into());
 
-    println!("VNC for '{name}':");
-    println!("  bind     {bind}");
-    println!("  display  :{}", ep.display);
-    println!("  port     {}", ep.port);
+    println!("{} {}", s::accent("VNC for"), s::accent(format!("'{name}'")));
+    println!("  {}     {bind}",                 s::label("bind"));
+    println!("  {}  :{}",                       s::label("display"), ep.display);
+    println!("  {}     {}",                     s::label("port"), ep.port);
     println!();
-    println!("From a VNC viewer:");
-    println!("  vncviewer {bind}:{}           # canonical: host:display", ep.display);
-    println!("  vncviewer {bind}::{}        # explicit port form (always works)", ep.port);
+    println!("{}", s::label("From a VNC viewer:"));
+    println!("  {} {bind}:{}           {}",     s::cmd("vncviewer"), ep.display, s::dim("# canonical: host:display"));
+    println!("  {} {bind}::{}        {}",       s::cmd("vncviewer"), ep.port, s::dim("# explicit port form (always works)"));
     println!();
-    println!("From macOS Screen Sharing:");
-    println!("  open vnc://{bind}");
+    println!("{}", s::label("From macOS Screen Sharing:"));
+    println!("  {} vnc://{bind}",               s::cmd("open"));
 
     if bind == "127.0.0.1" {
         println!();
-        println!("Loopback bind — first tunnel via SSH:");
-        println!("  ssh -L {p}:127.0.0.1:{p} root@{host}", p = ep.port);
-        println!("  # then on your laptop:");
-        println!("  open vnc://127.0.0.1");
+        println!("{}", s::label("Loopback bind — first tunnel via SSH:"));
+        println!("  {} -L {p}:127.0.0.1:{p} root@{host}", s::cmd("ssh"), p = ep.port);
+        println!("  {}", s::dim("# then on your laptop:"));
+        println!("  {} vnc://127.0.0.1", s::cmd("open"));
     } else {
         println!();
-        println!("(no VNC password by default — set one with `virsh edit {name}` if exposing on LAN)");
+        println!("{}", s::dim(format!(
+            "(no VNC password by default — set one with `virsh edit {name}` if exposing on LAN)"
+        )));
     }
 }
 

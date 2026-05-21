@@ -152,57 +152,58 @@ fn libvirtd_ok() -> bool {
 }
 
 pub fn run_doctor(install: bool, assume_yes: bool) -> Result<()> {
+    use crate::style as s;
     let family = Family::from_os_release();
-    println!("Host: {}", family.name());
+    println!("{} {}", s::label("Host:"), family.name());
     println!();
 
     // 1. Binary presence check
-    println!("Dependencies:");
+    println!("{}", s::label("Dependencies:"));
     let mut missing: Vec<&Dep> = Vec::new();
     let mut virsh_present = false;
     for d in DEPS {
         let present = have(d.binary);
         if d.binary == "virsh" { virsh_present = present; }
         if present {
-            println!("  [ok]   {:<22} {}", d.binary, d.why);
+            println!("  {} {:<22} {}", s::ok("✓"), d.binary, s::dim(d.why));
         } else {
-            println!("  [MISS] {:<22} {}", d.binary, d.why);
+            println!("  {} {:<22} {}", s::err("✗"), d.binary, s::dim(d.why));
             missing.push(d);
         }
     }
 
     // 2. libvirtd reachability (only meaningful if virsh is present)
     println!();
-    println!("Services:");
+    println!("{}", s::label("Services:"));
     if virsh_present {
         if libvirtd_ok() {
-            println!("  [ok]   libvirtd reachable");
+            println!("  {} libvirtd reachable", s::ok("✓"));
         } else {
-            println!("  [WARN] libvirtd not reachable. Enable with:");
-            println!("           systemctl enable --now libvirtd");
+            println!("  {} libvirtd not reachable. Enable with:", s::warn("!"));
+            println!("    {}", s::cmd("systemctl enable --now libvirtd"));
         }
     } else {
-        println!("  [skip] libvirtd check (virsh missing)");
+        println!("  {} libvirtd check (virsh missing)", s::dim("○"));
     }
 
     // 3. Root check
     println!();
     if util::is_root() {
-        println!("  [ok]   running as root");
+        println!("  {} running as root", s::ok("✓"));
     } else {
-        println!("  [WARN] qvm must be run as root for VM operations");
+        println!("  {} qvm must be run as root for VM operations", s::warn("!"));
     }
 
     if missing.is_empty() {
         println!();
-        println!("All required dependencies are installed.");
+        println!("{}", s::ok("All required dependencies are installed."));
         print_examples();
         return Ok(());
     }
 
     // 4. Install hint or actual install
     println!();
-    println!("Missing {} package(s).", missing.len());
+    println!("{} {} package(s).", s::warn("Missing"), missing.len());
 
     let install_cmd = match family.install_cmd() {
         Some(c) => c,
@@ -225,11 +226,12 @@ pub fn run_doctor(install: bool, assume_yes: bool) -> Result<()> {
     let full = format!("{install_cmd} {}", pkgs.join(" "));
 
     if !install {
+        use crate::style as s;
         println!();
-        println!("Run this to install everything:");
-        println!("  {full}");
+        println!("{}", s::label("Run this to install everything:"));
+        println!("  {}", s::cmd(&full));
         println!();
-        println!("Or let qvm do it: `qvm doctor --install`");
+        println!("Or let qvm do it: {}", s::cmd("qvm doctor --install"));
         return Err(Error::User("dependencies missing".into()));
     }
 

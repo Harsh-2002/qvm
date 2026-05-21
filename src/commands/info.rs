@@ -2,10 +2,34 @@ use crate::cloudinit::login_user_of;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::libvirt;
+use crate::style;
 
 pub fn ls() -> Result<()> {
     libvirt::require_virsh()?;
-    print!("{}", libvirt::list_all()?);
+    let doms = libvirt::domains()?;
+    // Header: dim small-caps style.
+    println!(
+        "  {}  {}  {}",
+        style::label(format!("{:>3}", "ID")),
+        style::label(format!("{:<20}", "NAME")),
+        style::label("STATE"),
+    );
+    if doms.is_empty() {
+        println!("  {}", style::dim("(no VMs defined)"));
+        return Ok(());
+    }
+    for d in &doms {
+        let id_col = match d.id {
+            Some(n) => format!("{n:>3}"),
+            None    => "  -".into(),
+        };
+        println!(
+            "  {}  {}  {}",
+            style::dim(id_col),
+            d.name,
+            style::state_styled(&d.state),
+        );
+    }
     Ok(())
 }
 

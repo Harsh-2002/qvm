@@ -1,19 +1,37 @@
 use crate::config::Config;
 use crate::error::Result;
+use crate::style;
 
 pub fn distros(cfg: &Config) -> Result<()> {
-    println!("{:<14} {:<8} {:<6} IMAGE", "DISTRO", "FIRMWARE", "PRESENT");
+    println!(
+        "  {:<14} {:<8} {:<7} {}",
+        style::label("DISTRO"),
+        style::label("FIRMWARE"),
+        style::label("PULLED"),
+        style::label("IMAGE"),
+    );
     for (key, d) in &cfg.distros {
         let fw = if d.uefi { "uefi" } else { "bios" };
         let img = cfg.paths.images.join(&d.image);
-        let present = if img.exists() { "yes" } else { "no" };
-        println!("{:<14} {:<8} {:<6} {}", key, fw, present, d.image);
+        let pulled = img.exists();
+        println!(
+            "  {:<14} {:<8} {:<7} {}",
+            key,
+            fw,
+            style::yes_no(pulled),
+            style::dim(&d.image),
+        );
     }
     Ok(())
 }
 
 pub fn images(cfg: &Config) -> Result<()> {
-    println!("{:<40} {:<7} SIZE", "IMAGE", "EXISTS");
+    println!(
+        "  {:<40} {:<7} {}",
+        style::label("IMAGE"),
+        style::label("EXISTS"),
+        style::label("SIZE"),
+    );
     for d in cfg.distros.values() {
         let p = cfg.paths.images.join(&d.image);
         if p.exists() {
@@ -21,9 +39,9 @@ pub fn images(cfg: &Config) -> Result<()> {
                 Ok(m) => human_bytes(m.len()),
                 Err(_) => "?".into(),
             };
-            println!("{:<40} {:<7} {}", d.image, "yes", size);
+            println!("  {:<40} {:<7} {}", d.image, style::yes_no(true), size);
         } else {
-            println!("{:<40} {:<7} -", d.image, "no");
+            println!("  {:<40} {:<7} {}", d.image, style::yes_no(false), style::dim("-"));
         }
     }
     Ok(())

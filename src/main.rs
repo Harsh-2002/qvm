@@ -139,7 +139,13 @@ fn main() -> ExitCode {
 
     match dispatch(&cli, &cfg_path) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => { eprintln!("Error: {e}"); ExitCode::from(1) }
+        Err(e) => {
+            // Stderr is the canonical place for error output. The Error:
+            // prefix is colored red+bold if the parent process attached a
+            // TTY; piped/redirected stderr gets plain text automatically.
+            eprintln!("{} {e}", qvm::style::err("Error:"));
+            ExitCode::from(1)
+        }
     }
 }
 
