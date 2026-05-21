@@ -55,8 +55,8 @@ pull while VMs exist" to someone (including future you) at 2 AM.
 - List, inspect, get IP, get an SSH command, and **`qvm ssh <vm>`** that
   exec's ssh directly instead of just printing the command
 - `--json` output on `qvm ls`, `qvm distros`, `qvm images` for automation
-- Pull and list distro base images (5 baked in, more via config) — each
-  with **both amd64 and arm64 variants**
+- Pull and list distro base images (9 baked in, more via config) — each
+  with **both amd64 and arm64 variants** (Arch is x86_64-only upstream)
 - VNC connection info (replaces the need for Cockpit for graphical access)
 - Resource changes (CPU, RAM, disk grow)
 - **`qvm console <name>`** — drops into `virsh console` with proper TTY
@@ -161,8 +161,9 @@ src/
 │                      ipv4() looks via agent, then DHCP lease, then ARP.
 │                      undefine() handles UEFI NVRAM correctly.
 ├── config.rs          TOML schema, baked-in defaults, distro registry.
-│                      Five built-in distros, each with per-arch variants
-│                      (x86_64 + aarch64). User config layers over top.
+│                      Nine built-in distros, each with per-arch variants
+│                      (x86_64 + aarch64; arch is x86_64-only).
+│                      User config layers over top.
 ├── cloudinit.rs       Seed generator. write_files() then build_iso().
 │                      Split so tests can exercise file generation without
 │                      needing genisoimage.

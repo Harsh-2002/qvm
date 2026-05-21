@@ -31,6 +31,10 @@ fn empty_file_uses_defaults_and_baked_distros() {
     assert!(cfg.distros.contains_key("alpine:3.20"));
     assert!(cfg.distros.contains_key("fedora:42"));
     assert!(cfg.distros.contains_key("rocky:9"));
+    assert!(cfg.distros.contains_key("almalinux:9"));
+    assert!(cfg.distros.contains_key("opensuse:15.6"));
+    assert!(cfg.distros.contains_key("centos-stream:10"));
+    assert!(cfg.distros.contains_key("arch"));
 }
 
 #[test]
@@ -151,6 +155,8 @@ fn builtin_distros_carry_both_amd64_and_arm64_variants() {
     for (key, d) in builtin_distros() {
         assert!(d.arch.contains_key("x86_64"),
             "{key} missing x86_64 variant");
+        // Arch upstream ships only an x86_64 cloud image.
+        if key == "arch" { continue; }
         assert!(d.arch.contains_key("aarch64"),
             "{key} missing aarch64 variant");
     }
@@ -167,7 +173,10 @@ fn builtin_distros_alpine_uses_uefi_and_sh() {
 #[test]
 fn builtin_distros_others_are_bios_and_bash() {
     let m = builtin_distros();
-    for key in ["ubuntu:24.04", "debian:13", "fedora:42", "rocky:9"] {
+    for key in [
+        "ubuntu:24.04", "debian:13", "fedora:42", "rocky:9",
+        "almalinux:9", "opensuse:15.6", "centos-stream:10", "arch",
+    ] {
         let d = m.get(key).unwrap();
         assert!(!d.uefi, "{key} should be BIOS, not UEFI");
         assert_eq!(d.shell, "/bin/bash", "{key} should use /bin/bash");
@@ -192,6 +201,6 @@ fn sample_toml_parses_without_overriding_defaults_unexpectedly() {
     let cfg = Config::load(Some(f.path())).expect("sample must parse");
     // Sample has bridge "br0" same as default
     assert_eq!(cfg.network.bridge, "br0");
-    // Sample has all 5 baked distros in the registry
-    assert!(cfg.distros.len() >= 5);
+    // Sample has all 9 baked distros in the registry
+    assert!(cfg.distros.len() >= 9);
 }
