@@ -1,0 +1,41 @@
+# qvm config - everything here is optional; baked-in defaults apply if omitted.
+# Edit then re-run `qvm init` to download the baseline images.
+
+[paths]
+images    = "/var/lib/qvm/images"      # base distro qcow2 cache
+vms       = "/var/lib/qvm/vms"         # per-VM disks (self-contained)
+cloudinit = "/var/lib/qvm/cloudinit"   # cloud-init seeds + .vmuser sidecars
+
+[network]
+bridge = "br0"                         # libvirt bridge name (must exist)
+
+[defaults]
+distro       = "debian:13"             # used when -d is omitted
+cpus         = 2
+memory_gb    = 4
+disk_gb      = 50
+autostart    = true                    # virsh autostart on host boot
+grub_timeout = 0                       # instant boot; comment out to keep distro default
+
+# Fallback password hash if -p is not given. Generate one with:
+#   mkpasswd --method=SHA-512   (apt install whois)
+#   openssl passwd -6
+password_hash = "$6$rounds=5000$qvmdefault$3qWlqQGJqB8ZQGqI7e9PJzPe7RoXLnQNN/9rb4ZG3D4z7y7TWqVx7yEqDfA0EHcM3aNl0wnHkE5wL5y9oF3kZ."
+
+[vnc]
+bind = "127.0.0.1"                     # "0.0.0.0" to expose on LAN (no auth by default)
+
+# SSH public keys injected for both the created login user AND root.
+ssh_keys = [
+    # "ssh-ed25519 AAAA... you@laptop",
+]
+
+# Custom distros (extend or override the baked-in 5).
+# Built-ins: ubuntu:24.04, debian:13, fedora:42, alpine:3.20, rocky:9
+#
+# [distros."ubuntu:22.04"]
+# image  = "ubuntu-22.04.qcow2"
+# osinfo = "ubuntu22.04"
+# shell  = "/bin/bash"
+# uefi   = false
+# url    = "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"

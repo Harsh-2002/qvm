@@ -1,0 +1,138 @@
+use crate::cloudinit::Seed;
+use crate::cmd::{require, run as cmd_run, run_inherit};
+use crate::config::Config;
+use crate::error::{Error, Result};
+use crate::libvirt;
+use crate::util::{hash_password, random_username, require_name, require_username};
+
+#[derive(Debug)]
+pub struct Args {
+    pub name:     String,
+    pub distro:   Option<String>,
+    pub cpus:     Option<u32>,
+    pub memory_gb:Option<u32>,
+    pub disk_gb:  Option<u32>,
+    pub user:     Option<String>,
+    pub password: Option<String>,
+    pub no_autostart: bool,
+}
+
+pub fn run(cfg: &Config, a: Args) -> Result<()> {
+    libvirt::require_virsh()?;
+    require("virt-install")?;
+    require("qemu-img")?;
+    require("genisoimage")?;
+
+    // --- resolve params ---
+    let name   = a.name;
+    let distro = a.distro.unwrap_or_else(|| cfg.defaults.distro.clone());
+    let cpus   = a.cpus.unwrap_or(cfg.defaults.cpus);
+    let ram_gb = a.memory_gb.unwrap_or(cfg.defaults.memory_gb);
+    let disk_gb= a.disk_gb.unwrap_or(cfg.defaults.disk_gb);
+
+    let user = match a.user {
+        Some(u) => u,
+        None => {
+            let u = random_username();
+            println!("No --user given; generated login user: {u}");
+            u
+        }
+    };
+    require_name(&name)?;
+    require_username(&user)?;
+
+    if cpus == 0 || ram_gb == 0 || disk_gb == 0 {
+        return Err(Error::User("cpus, memory, and disk must all be > 0".into()));
+    }
+    if libvirt::exists(&name) {
+        return Err(Error::User(format!("VM '{name}' already exists.")));
+    }
+
+    let d = cfg.distro(&distro)?;
+    let base = cfg.image_path(&distro)?;
+    if !base.exists() {
+        return Err(Error::User(format!(
+            "base image missing: {}\nRun: qvm pull {distro}", base.display()
+        )));
+    }
+
+    let pw_hash = match a.password {
+        Some(p) => hash_password(&p)?,
+        None    => cfg.defaults.password_hash.clone(),
+    };
+
+    cfg.ensure_dirs()?;
+    let disk_path = cfg.paths.vms.join(format!("{name}.qcow2"));
+    let iso_path  = cfg.paths.cloudinit.join(format!("{name}.iso"));
+    let ci_dir    = cfg.paths.cloudinit.join(&name);
+
+    // --- cloud-init seed ---
+    println!("Generating cloud-init seed...");
+    Seed {
+        vm_name: &name,
+        login_user: &user,
+        login_shell: &d.shell,
+        password_hash: &pw_hash,
+        ssh_keys: &cfg.ssh_keys,
+        grub_timeout: cfg.defaults.grub_timeout,
+    }.build(&ci_dir, &iso_path)?;
+
+    // --- SELF-CONTAINED disk: copy the base, do NOT chain it. ---
+    //
+    // This is the architectural fix that prevents the Dev/Hermes class
+    // of corruption. Pulling new bases later cannot affect existing VMs.
+    println!("Creating {disk_gb}G self-contained disk from {}...", d.image);
+    run_inherit("qemu-img", [
+        "convert", "-p", "-O", "qcow2",
+        base.to_str().unwrap(),
+        disk_path.to_str().unwrap(),
+    ])?;
+    cmd_run("qemu-img", [
+        "resize", "-q",
+        disk_path.to_str().unwrap(),
+        &format!("{disk_gb}G"),
+    ])?;
+
+    // --- define + start via virt-install --import ---
+    println!("Defining and starting VM...");
+    let memory_mb = (ram_gb as u64) * 1024;
+    let cpus_str  = cpus.to_string();
+    let memory_str= memory_mb.to_string();
+    let osinfo    = format!("name={},require=off", d.osinfo);
+    let netarg    = format!("bridge={},model=virtio", cfg.network.bridge);
+    let diskarg   = format!("path={},format=qcow2,bus=virtio", disk_path.display());
+    let cdromarg  = format!("path={},device=cdrom", iso_path.display());
+    let vncarg    = format!("vnc,listen={}", cfg.vnc.bind);
+
+    let mut args: Vec<String> = vec![
+        "--name".into(),     name.clone(),
+        "--memory".into(),   memory_str,
+        "--vcpus".into(),    cpus_str,
+        "--cpu".into(),      "host-passthrough".into(),
+        "--disk".into(),     diskarg,
+        "--disk".into(),     cdromarg,
+        "--osinfo".into(),   osinfo,
+        "--graphics".into(), vncarg,
+        "--network".into(),  netarg,
+        "--channel".into(),  "unix,target_type=virtio,name=org.qemu.guest_agent.0".into(),
+        "--import".into(),
+        "--noautoconsole".into(),
+    ];
+    if d.uefi {
+        args.push("--machine".into()); args.push("q35".into());
+        args.push("--boot".into());    args.push("uefi,loader.secure=no".into());
+    }
+    run_inherit("virt-install", args.iter().map(|s| s.as_str()))?;
+
+    let autostart = !a.no_autostart && cfg.defaults.autostart;
+    if autostart { libvirt::autostart_on(&name)?; }
+
+    // --- summary ---
+    println!();
+    println!("VM '{name}' created.");
+    println!("  distro {distro}   vcpus {cpus}   ram {ram_gb}G   disk {disk_gb}G   user {user}");
+    println!();
+    println!("  qvm ip {name}        # address (wait ~30s for boot)");
+    println!("  qvm ssh-cmd {name}   # ssh command");
+    Ok(())
+}

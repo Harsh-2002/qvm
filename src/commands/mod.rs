@@ -1,0 +1,11 @@
+pub mod completions;
+pub mod create;
+pub mod delete;
+pub mod doctor;
+pub mod images;
+pub mod info;
+pub mod init;
+pub mod lifecycle;
+pub mod pull;
+pub mod resources;
+pub mod vnc;
