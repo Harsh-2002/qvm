@@ -42,6 +42,60 @@ pub fn list_all() -> Result<String> { run("virsh", ["list", "--all"]) }
 /// `virsh dominfo <name>` raw.
 pub fn dominfo(name: &str) -> Result<String> { run("virsh", ["dominfo", name]) }
 
+// ── structured domain listing for the TUI ─────────────────────────────────────
+
+/// A parsed row from `virsh list --all`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Domain {
+    pub name:  String,
+    pub state: String,
+    /// libvirt domain ID — Some when running, None when stopped.
+    pub id:    Option<u32>,
+}
+
+/// Structured list of all domains (running + stopped).
+///
+/// Uses `virsh list --all --name` to enumerate names, then queries each one's
+/// state with `domstate`. Separating these avoids the brittle table-parsing
+/// the old `list_all()` text required.
+pub fn domains() -> Result<Vec<Domain>> {
+    require_virsh()?;
+    let names_out = run("virsh", ["list", "--all", "--name"])?;
+    // virsh emits a trailing blank line; filter it.
+    let names: Vec<&str> = names_out
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Build an id lookup from the running list (one extra virsh call, but it
+    // gives us domain IDs without a per-VM `domid` shell-out).
+    let mut id_for: std::collections::HashMap<String, u32> = Default::default();
+    if let Ok(out) = run("virsh", ["list"]) {
+        for line in out.lines().skip(2) {
+            let mut cols = line.split_whitespace();
+            if let (Some(id), Some(name)) = (cols.next(), cols.next()) {
+                if let Ok(n) = id.parse::<u32>() {
+                    id_for.insert(name.to_string(), n);
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let state = run("virsh", ["domstate", name])
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "unknown".into());
+        out.push(Domain {
+            name:  name.to_string(),
+            state,
+            id:    id_for.get(name).copied(),
+        });
+    }
+    Ok(out)
+}
+
 /// Get IPv4 of a VM via the QEMU guest agent (best), DHCP lease, or ARP table.
 ///
 /// Skips the loopback interface so a `lo 127.0.0.1/8` line never wins.
@@ -74,13 +128,33 @@ pub fn ipv4(name: &str) -> Option<String> {
     None
 }
 
-/// `virsh vncdisplay <name>` → ":1" (means port 5901). None if not started or no VNC.
-pub fn vnc_display(name: &str) -> Option<u16> {
+/// A VNC server's display number and TCP port.
+///
+/// `virsh vncdisplay` returns e.g. `10.1.1.10:0` — "display 0", which maps to
+/// TCP port 5900. The standard VNC client syntax is `host:display`; the
+/// double-colon `host::port` form is the unambiguous escape hatch. qvm prints
+/// both so users have at least one form their viewer accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VncEndpoint {
+    pub display: u16,
+    pub port:    u16,
+}
+
+/// Parse `virsh vncdisplay <name>` output (`<host>:<display>`) into both
+/// display number and TCP port (= 5900 + display).
+///
+/// Returns `None` when the VM has no VNC graphics or isn't started.
+pub fn vnc_endpoint(name: &str) -> Option<VncEndpoint> {
     let out = run("virsh", ["vncdisplay", name]).ok()?;
-    let s = out.trim();
+    parse_vnc_display(out.trim())
+}
+
+/// Pure parser, extracted so it can be unit-tested without virsh.
+pub fn parse_vnc_display(s: &str) -> Option<VncEndpoint> {
     let after_colon = s.rsplit(':').next()?;
-    let n: u16 = after_colon.parse().ok()?;
-    n.checked_add(5900)
+    let display: u16 = after_colon.parse().ok()?;
+    let port = display.checked_add(5900)?;
+    Some(VncEndpoint { display, port })
 }
 
 // ── precondition helpers ──────────────────────────────────────────────────────

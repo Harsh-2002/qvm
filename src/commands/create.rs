@@ -48,9 +48,11 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     let d = cfg.distro(&distro)?;
     let base = cfg.image_path(&distro)?;
     if !base.exists() {
-        return Err(Error::User(format!(
-            "base image missing: {}\nRun: qvm pull {distro}", base.display()
-        )));
+        // docker-style: pull on demand instead of forcing the user back to
+        // `qvm pull`. `pull_one` writes atomically (`.partial` → rename) and
+        // inherits wget's progress bar, so the user sees download progress.
+        println!("Unable to find image '{distro}' locally, pulling...");
+        crate::commands::pull::pull_one(cfg, &distro)?;
     }
 
     let pw_hash = match a.password {

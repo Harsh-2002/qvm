@@ -10,4 +10,5 @@ pub mod commands;
 pub mod config;
 pub mod error;
 pub mod libvirt;
+pub mod tui;
 pub mod util;

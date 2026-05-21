@@ -21,6 +21,8 @@ toml = "0.8"
 thiserror = "1"
 rand = "0.8"
 sha-crypt = "0.5"
+ratatui = "0.30.0"
+crossterm = "0.29.0"
 
 [profile.release]
 opt-level = 3

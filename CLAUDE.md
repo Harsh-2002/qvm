@@ -55,8 +55,12 @@ pull while VMs exist" to someone (including future you) at 2 AM.
 - Pull and list distro base images (5 baked in, more via config)
 - VNC connection info (replaces the need for Cockpit for graphical access)
 - Resource changes (CPU, RAM, disk grow)
-- One-time setup: `qvm init` writes a sample config and downloads the
-  baseline image set
+- One-time setup: `qvm init` writes a sample config and (optionally)
+  downloads the baseline image set
+- **Interactive TUI** (bare `qvm` with no subcommand) — a k9s-style live
+  dashboard for users who prefer browsing over typing. The CLI remains the
+  source of truth; the TUI is a thin presenter that delegates to the same
+  `commands::*` functions the CLI uses.
 - A single static `amd64` binary; no daemon, no extra runtime
 
 ### Explicitly out of scope
@@ -70,8 +74,10 @@ re-reading section 1 and considering whether the tool is sprawling.
   would be acceptable; we won't reinvent it)
 - Storage pools / LVM / Ceph / anything other than qcow2 files in a
   configurable directory
-- Web UI or TUI (we're replacing Cockpit; adding another would defeat the
-  point)
+- Web UI (we're replacing Cockpit; adding another would defeat the
+  point). The terminal TUI is in scope; a *web* UI is not.
+- VNC proxy / noVNC integration — qvm prints connect info only. Use
+  `websockify` externally if you want browser access.
 - User management or multi-tenant access (single root-owned tool)
 - Image building or Packer-style workflows
 - Container support (this is a VM tool)
@@ -137,17 +143,28 @@ src/
     ├── init.rs        First-run: write config, prep dirs, optionally pull
     │                  all images.
     ├── pull.rs        Atomic image download (write to .partial, mv on
-    │                  success).
+    │                  success). Exposes `pull_one()` so create.rs can
+    │                  auto-pull on demand.
     ├── create.rs      The interesting one. Reads distro, generates seed,
     │                  full-copies the base, runs virt-install --import.
+    │                  Auto-pulls the base image if missing.
     ├── delete.rs      Stops, undefines (handles UEFI nvram), removes files,
     │                  verifies, reports honestly if libvirt still has it.
     ├── lifecycle.rs   start/stop/restart/kill - one-line virsh passthroughs.
     ├── info.rs        ls / inspect / ip / ssh-cmd.
     ├── images.rs      distros / images listings.
     ├── resources.rs   set-cpu / set-ram / resize-disk.
-    └── vnc.rs         Prints the connect string with ssh -L tunnel guide.
-                       --open tries to launch a local viewer.
+    └── vnc.rs         Prints the connect string (canonical `host:display`
+                       AND explicit `host::port` forms — most viewers reject
+                       the port-only form). --open launches a local viewer.
+
+src/tui/
+    ├── mod.rs         Terminal init/teardown, panic-hook, main event loop.
+    │                  Only file that touches raw mode.
+    ├── app.rs         State machine + apply() dispatch. Pure logic.
+    ├── ui.rs          Pure render functions for table, modals, popups.
+    ├── events.rs      Crossterm key events → Action enum.
+    └── forms.rs       Minimal text-input helper (avoids tui-input dep).
 ```
 
 ---
@@ -198,6 +215,27 @@ Maximum performance, nested virtualization works automatically if the host
 supports it. The only thing it loses you is live migration across CPUs of
 different models — and migration is out of scope (see section 2). For a
 single-host homelab tool this is strictly better than `host-model`.
+
+### Why a TUI now, after originally swearing it off
+
+Section 2 used to list "Web UI or TUI" as out of scope. The reversal came
+out of a real diagnostic on the `aether` host: `qvm vnc <name>` was
+printing `vncviewer <bind>:5900` (port form), which almost every modern
+VNC client treats as **display 5900 → port 11800**. So qvm had been
+silently handing users a broken connect string for months. We fixed the
+string, but the bigger lesson was that the no-interactive stance was
+hurting people: the user who hit this bug never even noticed the
+"display vs port" subtlety because they had no easy way to *see* their
+running VMs at a glance, watch state changes, or jump to a console
+without remembering subcommand names.
+
+The CLI is still the source of truth. The TUI in `src/tui/` is a thin
+presenter — every action delegates to `commands::*` functions. No logic
+duplication, no parallel state, no extra config. The CLI works exactly
+as it did before. Adding the TUI was a smaller change than the previous
+"don't add it" stance had implied.
+
+We still draw a hard line at a **web UI**. That stays out of scope.
 
 ### Why UEFI for Alpine only
 
@@ -295,11 +333,15 @@ does **not** create a GitHub release — that's a manual decision for now.
 
 A few things that look like missed opportunities but are intentional:
 
-- **No `qvm console` command yet.** `virsh console <name>` works; we'll add
-  a thin wrapper, but the priority was lifecycle + image management first.
+- **No `qvm console` CLI subcommand.** The in-TUI `e` action drops you
+  into `virsh console <name>` with suspend/restore handled cleanly. CLI
+  users can still run `virsh console <name>` directly. A thin `qvm
+  console` wrapper would be a small addition if anyone wants it.
 - **`qvm vnc` prints info; doesn't proxy a connection.** Adding a TLS
   proxy or websocket bridge would be a real feature; not in scope. The
-  default is to bind VNC to 127.0.0.1 and tunnel via SSH.
+  default is to bind VNC to 127.0.0.1 and tunnel via SSH. The connect
+  string is printed in both `host:display` (canonical) and `host::port`
+  (explicit) forms because viewers disagree on which they accept.
 - **No `qvm export` / `qvm import` yet.** These are the qemu-nbd-based
   data-extraction commands the user did manually during the disaster
   recovery. They're high-value future additions. The pattern (mount
@@ -309,10 +351,14 @@ A few things that look like missed opportunities but are intentional:
   overlay-based VM from its backing file (the recovery operation for VMs
   created by the old bash tool). For now, the equivalent manual command is
   documented in the README.
-- **No interactive wizard.** The bash predecessor had one. The Rust version
-  doesn't because the CLI is short and docker-style; if the user can type
-  `docker run` they can type `qvm run`. We can add a wizard later if anyone
-  complains.
+- **`qvm init` IS interactive.** Earlier versions deliberately had no
+  wizard; the Rust version now ships one because the config has enough
+  knobs (bridge, paths, SSH keys, default password hash) that asking
+  questions is faster than asking the user to learn the TOML schema.
+  Silent mode is still available via `qvm init --yes`.
+- **`qvm` with no subcommand opens the TUI.** This is a deliberate
+  reversal of the original "no TUI" stance — see section 5's "Why a TUI
+  now". The CLI surface is unchanged; the TUI is purely additive.
 
 ---
 

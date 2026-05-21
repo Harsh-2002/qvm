@@ -19,8 +19,9 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
+    /// Subcommand (omit to launch the interactive TUI).
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -120,7 +121,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     // `completions` doesn't need root - it's purely a script generator.
-    let needs_root = !matches!(cli.cmd, Cmd::Completions { .. });
+    let needs_root = !matches!(cli.cmd, Some(Cmd::Completions { .. }));
     if needs_root && !util::is_root() {
         eprintln!("qvm: must run as root.");
         return ExitCode::from(1);
@@ -136,8 +137,19 @@ fn main() -> ExitCode {
 }
 
 fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
+    // No subcommand → launch the interactive TUI.
+    let Some(cmd) = &cli.cmd else {
+        if !cfg_path.exists() {
+            return Err(qvm::error::Error::User(format!(
+                "config not found at {}\nRun: sudo qvm init", cfg_path.display()
+            )));
+        }
+        let cfg = Config::load(Some(cfg_path))?;
+        return qvm::tui::run(&cfg);
+    };
+
     // Commands that don't need a config file.
-    match &cli.cmd {
+    match cmd {
         Cmd::Init { pull_all, yes }    => return commands::init::run(cfg_path, *pull_all, *yes),
         Cmd::Doctor { install, yes }   => return commands::doctor::run_doctor(*install, *yes),
         Cmd::Completions { shell }     => return commands::completions::run::<Cli>(*shell),
@@ -146,7 +158,7 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
 
     let cfg = Config::load(Some(cfg_path))?;
 
-    match &cli.cmd {
+    match cmd {
         Cmd::Init { .. } | Cmd::Doctor { .. } | Cmd::Completions { .. } => unreachable!("handled above"),
 
         Cmd::Create { name, distro, cpus, memory_gb, disk_gb, user, password, no_autostart } => {
