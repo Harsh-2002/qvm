@@ -44,7 +44,7 @@ fn shell(title: &str, body: &str, summary: &str, flash: Option<Flash>) -> String
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title} · qvm</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v={ver}">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%233b82f6'/%3E%3Ctext x='50' y='66' font-family='monospace' font-size='52' font-weight='bold' text-anchor='middle' fill='white'%3Eq%3C/text%3E%3C/svg%3E">
 </head>
 <body>
@@ -57,7 +57,7 @@ fn shell(title: &str, body: &str, summary: &str, flash: Option<Flash>) -> String
 </main>
 {toast}
 <footer>qvm {ver} — press <kbd>?</kbd> for shortcuts</footer>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={ver}"></script>
 </body>
 </html>
 "#,
