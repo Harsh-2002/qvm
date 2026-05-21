@@ -15,10 +15,16 @@ pub enum Action {
     // Sidebar navigation (always available except in text-entry modes).
     Up,
     Down,
+    /// Mouse-driven: jump straight to the Nth visible row.
+    SelectIndex(usize),
 
     // Detail-pane scrolling.
     ScrollDetailUp,
     ScrollDetailDown,
+
+    // Focus / view toggles.
+    CycleFocus,
+    ToggleRaw, // switch between structured detail and raw `virsh dominfo`
 
     // Mode transitions.
     OpenCreate,
@@ -37,6 +43,8 @@ pub enum Action {
 
     // Console (handled in tui/mod.rs — suspend + exec virsh console).
     Console,
+    // Browser VNC (handled in tui/mod.rs — suspend + websockify).
+    Browser,
 
     // VNC info (shown as a toast).
     ShowVnc,
@@ -86,6 +94,7 @@ pub fn map_key(app: &App, k: KeyEvent) -> Action {
 fn key_in_detail(k: KeyEvent) -> Action {
     match k.code {
         KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+        KeyCode::Tab                       => Action::CycleFocus,
         KeyCode::Char('j') | KeyCode::Down => Action::Down,
         KeyCode::Char('k') | KeyCode::Up   => Action::Up,
         KeyCode::PageDown                  => Action::ScrollDetailDown,
@@ -94,12 +103,14 @@ fn key_in_detail(k: KeyEvent) -> Action {
         KeyCode::Char('d') => Action::OpenDelete,
         KeyCode::Char('v') => Action::ShowVnc,
         KeyCode::Char('e') => Action::Console,
+        KeyCode::Char('b') => Action::Browser,
         KeyCode::Char('s') => Action::Start,
         KeyCode::Char('t') => Action::Stop,
         KeyCode::Char('r') => Action::Restart,
         KeyCode::Char('/') => Action::OpenFilter,
         KeyCode::Char('o') => Action::CycleSort,
         KeyCode::Char('?') => Action::OpenHelp,
+        KeyCode::Char('R') => Action::ToggleRaw,
         _ => Action::Noop,
     }
 }
@@ -110,6 +121,7 @@ fn key_in_empty(k: KeyEvent) -> Action {
         KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
         KeyCode::Char('c') => Action::OpenCreate,
         KeyCode::Char('?') => Action::OpenHelp,
+        KeyCode::Tab       => Action::CycleFocus,
         _ => Action::Noop,
     }
 }

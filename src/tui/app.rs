@@ -9,8 +9,19 @@ use crate::config::Config;
 use crate::libvirt;
 use crate::tui::events::Action;
 use crate::tui::forms::TextInput;
+use crate::tui::theme::Theme;
 use crate::util;
+use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
+
+/// Which pane the keyboard is currently driving. Tab cycles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusPane { Sidebar, Detail }
+impl FocusPane {
+    pub fn next(self) -> Self {
+        match self { FocusPane::Sidebar => FocusPane::Detail, FocusPane::Detail => FocusPane::Sidebar }
+    }
+}
 
 const TICK: Duration = Duration::from_secs(2);
 const TOAST_TTL: Duration = Duration::from_secs(5);
@@ -61,6 +72,8 @@ pub struct App {
     pub selected: usize,
     /// Scroll offset for the dominfo region of the Detail pane.
     pub detail_scroll: u16,
+    /// Toggle: show raw `virsh dominfo` instead of structured metadata.
+    pub show_raw_dominfo: bool,
     pub mode: Mode,
     pub should_quit: bool,
     pub filter: String,
@@ -70,6 +83,21 @@ pub struct App {
     pub last_refresh: Option<Instant>,
     pub create: CreateForm,
     pub host_label: String,
+    pub theme: Theme,
+    /// Animation tick — increments every render frame. Used for spinners.
+    pub tick: u64,
+    /// Which pane has keyboard focus (toggled by Tab).
+    pub focused: FocusPane,
+    /// True while a `libvirt::domains()` refresh is in flight (shows spinner).
+    pub is_refreshing: bool,
+    /// Optimistic state shown next to a row until the next refresh resolves it.
+    /// `(vm_name, displayed_state)` — e.g. `("web01", "starting…")`.
+    pub pending: Option<(String, &'static str)>,
+    /// Mouse hit-test targets — rebuilt every render.
+    /// `(area, visible_index)` for sidebar VM rows.
+    pub sidebar_hits: Vec<(Rect, usize)>,
+    /// `(area, hotkey_char)` for action-bar buttons.
+    pub action_hits: Vec<(Rect, char)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -91,6 +119,7 @@ impl App {
             rows: Vec::new(),
             selected: 0,
             detail_scroll: 0,
+            show_raw_dominfo: false,
             mode: Mode::EmptyState,
             should_quit: false,
             filter: String::new(),
@@ -100,6 +129,13 @@ impl App {
             last_refresh: None,
             create: CreateForm::default(),
             host_label: detect_host_label(),
+            theme: Theme::default(),
+            tick: 0,
+            focused: FocusPane::Sidebar,
+            is_refreshing: false,
+            pending: None,
+            sidebar_hits: Vec::new(),
+            action_hits: Vec::new(),
         }
     }
 
@@ -112,8 +148,10 @@ impl App {
 
     /// Refresh from libvirt. Best-effort: surfaces failures as a toast.
     pub fn refresh(&mut self, _cfg: &Config) {
+        self.is_refreshing = true;
         self.last_refresh = Some(Instant::now());
         let result = libvirt::domains();
+        self.is_refreshing = false;
         match result {
             Ok(doms) => {
                 let prev_selected_name = self.selected_name();
@@ -154,9 +192,30 @@ impl App {
                         }
                     }
                 }
+                // Clear pending optimistic state once the real state catches up.
+                if let Some((pname, _)) = &self.pending {
+                    if !self.rows.iter().any(|r| &r.name == pname) {
+                        // VM gone (e.g. deletion confirmed) — clear.
+                        self.pending = None;
+                    } else {
+                        // For lifecycle actions: clear after one refresh tick.
+                        // The real state from virsh now drives the row.
+                        self.pending = None;
+                    }
+                }
             }
             Err(e) => self.toast_err(format!("refresh failed: {e}")),
         }
+    }
+
+    /// What state should we display for a row, accounting for optimistic
+    /// pending updates? Returns the row's actual state unless `pending`
+    /// matches that row.
+    pub fn displayed_state(&self, row: &VmRow) -> String {
+        if let Some((n, s)) = &self.pending {
+            if n == &row.name { return (*s).to_string(); }
+        }
+        row.state.clone()
     }
 
     fn apply_sort(&mut self) {
@@ -209,6 +268,11 @@ impl App {
     pub fn apply(&mut self, action: Action, cfg: &Config) {
         match action {
             Action::Quit          => self.should_quit = true,
+            Action::CycleFocus    => { self.focused = self.focused.next(); }
+            Action::SelectIndex(i) => {
+                if i < self.visible_count() { self.selected = i; self.detail_scroll = 0; }
+            }
+            Action::ToggleRaw     => { self.show_raw_dominfo = !self.show_raw_dominfo; self.detail_scroll = 0; }
             Action::Down          => { self.move_selection(1); self.detail_scroll = 0; }
             Action::Up            => { self.move_selection(-1); self.detail_scroll = 0; }
             Action::ScrollDetailDown => self.detail_scroll = self.detail_scroll.saturating_add(1),
@@ -261,7 +325,7 @@ impl App {
                 self.close_to_detail();
             }
             // Actions handled in tui/mod.rs (suspend+exec) — should never reach here.
-            Action::Console | Action::SubmitCreate | Action::Noop => {}
+            Action::Console | Action::Browser | Action::SubmitCreate | Action::Noop => {}
         }
         if let Some((_, when)) = self.toast {
             if when.elapsed() > TOAST_TTL * 4 { self.toast = None; }
@@ -286,9 +350,17 @@ impl App {
 
     fn act_lifecycle(&mut self, verb: &str, f: fn(&str) -> crate::error::Result<()>) {
         let name = match self.selected_name() { Some(n) => n, None => return };
+        // Optimistic state — clears on next refresh.
+        let pending_label: &'static str = match verb {
+            "start"   => "starting…",
+            "stop"    => "stopping…",
+            "restart" => "restarting…",
+            _         => "…",
+        };
+        self.pending = Some((name.clone(), pending_label));
         match f(&name) {
             Ok(()) => self.toast_ok(format!("{verb}: '{name}'")),
-            Err(e) => self.toast_err(format!("{verb} '{name}' failed: {e}")),
+            Err(e) => { self.pending = None; self.toast_err(format!("{verb} '{name}' failed: {e}")); }
         }
     }
 

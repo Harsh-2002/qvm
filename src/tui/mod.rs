@@ -12,6 +12,7 @@
 pub mod app;
 mod events;
 mod forms;
+mod theme;
 mod ui;
 
 use crate::cmd::run_tty;
@@ -19,7 +20,7 @@ use crate::config::Config;
 use crate::error::Result;
 use crossterm::{
     cursor::{Hide, Show},
-    event::{self, Event},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, MouseButton, MouseEventKind},
     execute,
     terminal::{
         disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -45,12 +46,13 @@ pub fn run(cfg: &Config) -> Result<()> {
     }));
 
     enable_raw_mode().map_err(io_err)?;
-    execute!(stdout(), EnterAlternateScreen, Hide).map_err(io_err)?;
+    execute!(stdout(), EnterAlternateScreen, Hide, EnableMouseCapture).map_err(io_err)?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout())).map_err(io_err)?;
     let result = main_loop(&mut terminal, cfg);
 
     // Always restore the terminal, even on error.
+    let _ = execute!(stdout(), DisableMouseCapture);
     let _ = disable_raw_mode();
     let _ = execute!(stdout(), LeaveAlternateScreen, Show);
 
@@ -65,21 +67,90 @@ fn main_loop(
     app.refresh(cfg);
 
     while !app.should_quit {
-        terminal.draw(|f| ui::draw(f, &app)).map_err(io_err)?;
+        terminal.draw(|f| ui::draw(f, &mut app)).map_err(io_err)?;
+        app.tick = app.tick.wrapping_add(1);
 
-        if event::poll(Duration::from_millis(200)).map_err(io_err)? {
+        if event::poll(Duration::from_millis(100)).map_err(io_err)? {
             let ev = event::read().map_err(io_err)?;
-            if let Event::Key(k) = ev {
-                let action = events::map_key(&app, k);
-                handle_action(&mut app, action, cfg, terminal)?;
+            match ev {
+                Event::Key(k) => {
+                    let action = events::map_key(&app, k);
+                    handle_action(&mut app, action, cfg, terminal)?;
+                }
+                Event::Mouse(m) => {
+                    if let Some(action) = mouse_to_action(&app, &m) {
+                        handle_action(&mut app, action, cfg, terminal)?;
+                    }
+                }
+                _ => {}
             }
         }
 
         if app.tick_due() {
+            // Make the spinner visible: flip the flag, repaint one frame so
+            // the user sees the indicator, then do the work synchronously.
+            app.is_refreshing = true;
+            terminal.draw(|f| ui::draw(f, &mut app)).map_err(io_err)?;
             app.refresh(cfg);
         }
     }
     Ok(())
+}
+
+fn mouse_to_action(app: &app::App, m: &crossterm::event::MouseEvent) -> Option<events::Action> {
+    use events::Action;
+    match m.kind {
+        MouseEventKind::ScrollUp   => Some(Action::ScrollDetailUp),
+        MouseEventKind::ScrollDown => Some(Action::ScrollDetailDown),
+        MouseEventKind::Down(MouseButton::Left) => {
+            let (col, row) = (m.column, m.row);
+            // Sidebar click → select VM by index.
+            for (rect, idx) in &app.sidebar_hits {
+                if hit(rect, col, row) {
+                    // Synthesize a Down/Up sequence to reach `idx` from current
+                    // selection. Simplest: emit a generic "go to row N" by
+                    // computing delta and dispatching multiple moves. To keep
+                    // things simple, only emit one Down/Up per click — clicking
+                    // again moves more. Better: a real SelectIndex action.
+                    return Some(Action::SelectIndex(*idx));
+                }
+            }
+            // Action-bar button click → simulate the key.
+            for (rect, key) in &app.action_hits {
+                if hit(rect, col, row) {
+                    return key_char_to_action(*key, &app.mode);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn hit(r: &ratatui::layout::Rect, col: u16, row: u16) -> bool {
+    col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
+}
+
+fn key_char_to_action(key: char, mode: &app::Mode) -> Option<events::Action> {
+    use events::Action;
+    use app::Mode;
+    Some(match (key, mode) {
+        ('s', _) => Action::Start,
+        ('t', _) => Action::Stop,
+        ('r', _) => Action::Restart,
+        ('e', _) => Action::Console,
+        ('b', _) => Action::Browser,
+        ('d', _) => Action::OpenDelete,
+        ('c', _) => Action::OpenCreate,
+        ('v', _) => Action::ShowVnc,
+        ('/', _) => Action::OpenFilter,
+        ('o', _) => Action::CycleSort,
+        ('?', _) => Action::OpenHelp,
+        ('q', _) => Action::Quit,
+        ('y', Mode::ConfirmDelete) => Action::ConfirmDelete,
+        ('n', Mode::ConfirmDelete) => Action::CloseToDetail,
+        _ => return None,
+    })
 }
 
 /// Dispatch an action returned from key mapping. Most actions are state-only
@@ -104,6 +175,18 @@ fn handle_action(
                     run_tty("virsh", ["console", &name])
                 })?;
                 app.toast_ok(format!("Returned from console of '{name}'"));
+                app.refresh(cfg);
+            }
+        }
+        Action::Browser => {
+            if let Some(name) = app.selected_name() {
+                let result = suspend(terminal, ||
+                    crate::commands::vnc::run(cfg, &name, /*open*/ false, /*browser*/ true)
+                );
+                match result {
+                    Ok(()) => app.toast_ok(format!("Closed browser bridge for '{name}'")),
+                    Err(e) => app.toast_err(format!("browser '{name}' failed: {e}")),
+                }
                 app.refresh(cfg);
             }
         }

@@ -1,281 +1,421 @@
 //! Pure render functions. No state mutation, no I/O.
 //!
-//! Layout (≥80 cols): header (1 line) · split-pane (sidebar + content) ·
-//! status bar (2 lines). On narrower terminals we collapse to a single
-//! pane and just show the sidebar list with a status bar below.
+//! Layout (≥80 cols):
+//!
+//!   Header               (1 line)
+//!   ┌──────────┬──────────────────┐
+//!   │ Sidebar  │  Content pane    │   ← body, fills remaining height
+//!   └──────────┴──────────────────┘
+//!   Toast line           (1 line, only when a toast is active)
+//!   ╭──────────────────────────────╮
+//!   │ Action bar  (2 rows of keys) │   ← bordered panel, 4 lines incl. borders
+//!   ╰──────────────────────────────╯
+//!
+//! Every render fn takes `&App`; styles come from `app.theme` exclusively.
 
-use crate::tui::app::{App, CreateForm, Mode, Sort, Toast, VmRow};
+use crate::tui::app::{App, CreateForm, FocusPane, Mode, Sort, Toast, VmRow};
+use crate::tui::theme::Theme;
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Row, Table, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
+    // Reset hit-test tables — repopulated by sub-renderers.
+    app.sidebar_hits.clear();
+    app.action_hits.clear();
+
     let area = f.area();
+    let theme = app.theme.clone();
+
+    // Reserve space for the optional toast line + action bar.
+    let toast_h: u16 = if app.current_toast().is_some() { 1 } else { 0 };
+    let action_bar_h: u16 = 4; // 2 rows + 2 border rows
+
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),   // header
-            Constraint::Min(3),      // body (split-pane)
-            Constraint::Length(2),   // status bar (hints + toast)
+            Constraint::Length(1),               // header
+            Constraint::Min(3),                  // body
+            Constraint::Length(toast_h),
+            Constraint::Length(action_bar_h),
         ])
         .split(area);
 
     draw_header(f, layout[0], app);
 
     if layout[1].width < 80 {
-        // Very narrow terminals — single-pane fallback.
         draw_narrow_body(f, layout[1], app);
     } else {
         let body = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(26), Constraint::Min(40)])
+            .constraints([Constraint::Length(28), Constraint::Min(40)])
             .split(layout[1]);
         draw_sidebar(f, body[0], app);
         draw_content(f, body[1], app);
     }
 
-    draw_status_bar(f, layout[2], app);
+    if toast_h > 0 { draw_toast_line(f, layout[2], app); }
+    draw_action_bar(f, layout[3], app);
+
+    // Modal overlay — confirm delete renders centered on top of everything.
+    if let Mode::ConfirmDelete = app.mode {
+        draw_confirm_dialog(f, area, app);
+    }
+
+    // Position the text cursor for active text-entry modes.
+    match &app.mode {
+        Mode::Filter => place_filter_cursor(f, app, layout[1], &theme),
+        Mode::CreateForm => place_create_cursor(f, app, layout[1]),
+        _ => {}
+    }
 }
 
 // ── header ────────────────────────────────────────────────────────────────────
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
     let running = app.rows.iter().filter(|r| r.state == "running").count();
     let total   = app.rows.len();
     let summary = if app.filter.is_empty() {
-        format!(" {total} VMs · {running} running ")
+        format!("{total} VMs · {running} running")
     } else {
-        let v = app.visible_count();
-        format!(" {v}/{total} VMs · filter: {} ", app.filter)
+        format!("{}/{total} VMs · filter “{}”", app.visible_count(), app.filter)
     };
 
-    let cols = area.width as usize;
-    let left  = format!(" qvm {VERSION} ");
-    let mid   = format!(" {} ", app.host_label);
-    let right = summary;
-    // pad middle so total fits cols
-    let pad = cols.saturating_sub(left.len() + mid.len() + right.len());
-    let bar = format!("{left}{mid}{:pad$}{right}", "", pad = pad);
+    let mut spans: Vec<Span<'_>> = vec![
+        Span::raw(" "),
+        Span::styled(format!("qvm {VERSION}"), t.accent()),
+        Span::styled("  •  ", Style::default().fg(t.text_faint)),
+        Span::styled(app.host_label.clone(), t.text()),
+        Span::styled("  •  ", Style::default().fg(t.text_faint)),
+        Span::styled(summary, t.dim()),
+    ];
 
-    let style = Style::default().bg(Color::DarkGray).fg(Color::White)
-        .add_modifier(Modifier::BOLD);
-    f.render_widget(Paragraph::new(bar).style(style), area);
+    // Right-aligned context hint or spinner.
+    let right_hint = if app.is_refreshing {
+        format!("{} refreshing… ", t.spinner(app.tick))
+    } else {
+        match app.mode {
+            Mode::Help => "any key to dismiss ".into(),
+            _          => "[?] help  [Tab] focus  [q] quit ".into(),
+        }
+    };
+
+    // Pad between left and right.
+    let used_left: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let pad = (area.width as usize).saturating_sub(used_left + right_hint.chars().count());
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(right_hint, t.faint()));
+
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 // ── sidebar ───────────────────────────────────────────────────────────────────
 
-fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
+fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
+    let t = &app.theme;
+    let focused = app.focused == FocusPane::Sidebar;
+
     let block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_type(BorderType::Plain)
-        .title(Span::styled(" VIRTUAL MACHINES ",
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)));
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(t.border_style(focused))
+        .title(Span::styled("  VIRTUAL MACHINES  ",
+            Style::default().fg(t.text_faint).add_modifier(Modifier::BOLD)));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let mut y = inner.y;
+    let mut cursor_y = inner.y;
 
-    // Filter input line (only visible when filtering or filter is set).
+    // Filter row (only when filtering or filter is set).
     if matches!(app.mode, Mode::Filter) || !app.filter.is_empty() {
         let active = matches!(app.mode, Mode::Filter);
-        let prefix = if active { "/" } else { " filter:" };
         let value = if active { &app.filter_input.value } else { &app.filter };
-        let style = if active {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let r = Rect { x: inner.x, y, width: inner.width.saturating_sub(1), height: 1 };
-        f.render_widget(Paragraph::new(format!("{prefix} {value}")).style(style), r);
-        if active {
-            // Cursor position inside the filter input.
-            let cx = inner.x + (prefix.len() + 1) as u16 + app.filter_input.cursor as u16;
-            f.set_cursor_position((cx, y));
-        }
-        y = y.saturating_add(1);
+        let icon_style = if active { t.accent() } else { t.faint() };
+        let line = Line::from(vec![
+            Span::raw(" "),
+            Span::styled("/", icon_style),
+            Span::raw(" "),
+            Span::styled(value.clone(), t.text()),
+        ]);
+        f.render_widget(Paragraph::new(line), Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 });
+        cursor_y = cursor_y.saturating_add(2); // blank line after filter
     }
 
-    let avail_h = inner.height.saturating_sub(y - inner.y + 1) as usize; // reserve 1 for [+] new
+    // Reserve 3 lines at the bottom for separator + "+ create new VM" row + blank.
+    let reserved_bottom: u16 = 3;
+    let avail_h = inner.height.saturating_sub(cursor_y - inner.y).saturating_sub(reserved_bottom);
+
     let rows = app.visible();
-    let items: Vec<ListItem> = rows.iter().enumerate().take(avail_h).map(|(i, r)| {
+    // Each item is 2 lines (name + state line) + 1 blank => 3 lines/item.
+    let per_item: u16 = 3;
+    let max_items = (avail_h / per_item) as usize;
+    let items: Vec<ListItem<'_>> = rows.iter().enumerate().take(max_items).map(|(i, r)| {
         let selected = i == app.selected;
-        let dot = state_dot(&r.state);
-        let prefix = if selected { "› " } else { "  " };
+        let state_for_display = app.displayed_state(r);
+        let sel_marker = if selected { "▶ " } else { "  " };
         let name_style = if selected {
-            Style::default().fg(Color::White).bg(Color::Blue)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(t.text).bg(t.surface).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            t.text()
         };
-        ListItem::new(Line::from(vec![
-            Span::styled(prefix, name_style),
-            Span::raw(dot),
+        let line1 = Line::from(vec![
+            Span::styled(sel_marker, t.accent()),
+            Span::styled(t.state_glyph(&state_for_display).to_string(),
+                Style::default().fg(t.state_color(&state_for_display))),
             Span::raw(" "),
             Span::styled(r.name.clone(), name_style),
-        ]))
+        ]);
+        let detail = match &r.ip {
+            Some(ip) => format!("    {} · {}", state_for_display, ip),
+            None     => format!("    {}", state_for_display),
+        };
+        let line2 = Line::from(Span::styled(detail, t.faint()));
+        ListItem::new(vec![line1, line2, Line::raw("")])
     }).collect();
 
-    let list_area = Rect {
-        x: inner.x,
-        y,
-        width: inner.width.saturating_sub(1),
-        height: avail_h as u16,
-    };
+    let list_h = (items.len() as u16) * per_item;
+    let list_area = Rect { x: inner.x, y: cursor_y, width: inner.width, height: list_h };
     f.render_widget(List::new(items), list_area);
 
-    // [+] new at the bottom of the sidebar.
-    let new_y = inner.y + inner.height.saturating_sub(1);
-    let new_style = if matches!(app.mode, Mode::CreateForm) {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    // Record hit areas for mouse clicks.
+    for i in 0..items_count(app, max_items) {
+        let row_rect = Rect {
+            x: inner.x,
+            y: cursor_y + (i as u16) * per_item,
+            width: inner.width,
+            height: 2, // name + state line; ignore the blank
+        };
+        app.sidebar_hits.push((row_rect, i));
+    }
+
+    // [+] create new VM at the bottom of the sidebar.
+    let bottom_y = inner.y + inner.height - 2;
     f.render_widget(
-        Paragraph::new(" [+] create  (c) ").style(new_style),
-        Rect { x: inner.x, y: new_y, width: inner.width.saturating_sub(1), height: 1 },
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ─ ", t.faint()),
+            Span::styled("─".repeat(inner.width.saturating_sub(4) as usize), t.faint()),
+            Span::raw(" "),
+        ])),
+        Rect { x: inner.x, y: bottom_y, width: inner.width, height: 1 },
     );
-}
-
-fn state_dot(state: &str) -> &'static str {
-    match state {
-        "running" => "●",
-        "paused"  => "◐",
-        "crashed" => "✗",
-        _         => "○",
-    }
-}
-
-fn state_color(state: &str) -> Color {
-    match state {
-        "running" => Color::Green,
-        "paused"  => Color::Yellow,
-        "crashed" => Color::Red,
-        _         => Color::DarkGray,
-    }
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled("+", t.accent()),
+            Span::raw(" "),
+            Span::styled("create new VM", t.text()),
+            Span::styled("    (c)", t.faint()),
+        ])),
+        Rect { x: inner.x, y: bottom_y + 1, width: inner.width, height: 1 },
+    );
 }
 
 // ── content pane ──────────────────────────────────────────────────────────────
 
-fn draw_content(f: &mut Frame, area: Rect, app: &App) {
+fn items_count(app: &App, max_items: usize) -> usize {
+    app.visible().len().min(max_items)
+}
+
+fn draw_content(f: &mut Frame, area: Rect, app: &mut App) {
+    let t = &app.theme;
+    let focused = app.focused == FocusPane::Detail;
+    let title = match &app.mode {
+        Mode::CreateForm => "  CREATE VM  ".to_string(),
+        Mode::Help       => "  HELP  ".to_string(),
+        Mode::EmptyState => "".to_string(),
+        _                => app.selected_name()
+            .map(|n| format!("  {n}  "))
+            .unwrap_or_default(),
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(t.border_style(focused))
+        .title(Span::styled(title,
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
     match &app.mode {
-        Mode::Detail | Mode::ConfirmDelete | Mode::Filter => draw_detail(f, area, app),
-        Mode::CreateForm => draw_create(f, area, app),
-        Mode::Help       => draw_help(f, area),
-        Mode::EmptyState => draw_empty(f, area),
+        Mode::Detail | Mode::ConfirmDelete | Mode::Filter => draw_detail(f, inner, app),
+        Mode::CreateForm => draw_create(f, inner, app),
+        Mode::Help       => draw_help(f, inner, t),
+        Mode::EmptyState => draw_empty(f, inner, t),
     }
 }
 
 fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
     let Some(row) = app.selected_row() else {
-        draw_empty(f, area);
+        draw_empty(f, area, t);
         return;
     };
-    let inner_area = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 1 });
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),  // title
-            Constraint::Length(1),  // rule
-            Constraint::Length(11), // metadata table
-            Constraint::Min(2),     // dominfo scroll
-        ])
-        .split(inner_area);
+    let inner = area.inner(Margin { horizontal: 2, vertical: 1 });
 
-    // Title
+    // Status banner (1 line, colored).
+    let state = app.displayed_state(row);
     f.render_widget(
-        Paragraph::new(Span::styled(row.name.clone(),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD))),
-        chunks[0],
-    );
-    f.render_widget(
-        Paragraph::new(Span::styled("─".repeat(area.width as usize / 2),
-            Style::default().fg(Color::DarkGray))),
-        chunks[1],
+        Paragraph::new(Line::from(t.status_banner_span(&state))),
+        Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
     );
 
-    // Metadata KV table.
-    let metadata = build_metadata(row);
-    let kv_rows: Vec<Row> = metadata.into_iter().map(|(k, v, vc)| {
-        Row::new(vec![
-            Span::styled(format!("  {k:<10}"), Style::default().fg(Color::DarkGray)),
-            v,
-            Span::raw(""),
-        ]).style(Style::default().fg(vc))
-    }).collect();
-    let kv = Table::new(kv_rows, [Constraint::Length(14), Constraint::Min(20), Constraint::Length(0)]);
-    f.render_widget(kv, chunks[2]);
+    // Metadata rows or raw dominfo, depending on toggle.
+    if app.show_raw_dominfo {
+        let raw = row.dominfo.clone().unwrap_or_else(|| "(loading dominfo…)".into());
+        f.render_widget(
+            Paragraph::new(raw)
+                .style(t.dim())
+                .scroll((app.detail_scroll, 0))
+                .wrap(Wrap { trim: false }),
+            Rect { x: inner.x, y: inner.y + 2, width: inner.width,
+                   height: inner.height.saturating_sub(2) },
+        );
+        // Footer hint
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Press ", t.faint()),
+                Span::styled("[Shift+R]", t.accent()),
+                Span::styled(" to show structured view", t.faint()),
+            ])),
+            Rect { x: inner.x, y: inner.y + inner.height - 1, width: inner.width, height: 1 },
+        );
+        return;
+    }
 
-    // dominfo scrollable region.
-    let raw = row.dominfo.clone().unwrap_or_else(|| "  (loading dominfo …)".into());
+    // Structured metadata table.
+    let rows_meta = build_metadata_rows(row, t);
+    let mut y = inner.y + 2; // skip status + 1 blank line
+    for (label, value_span) in rows_meta {
+        if y >= inner.y + inner.height - 2 { break; }
+        let label_padded = format!("{:<12}", label);
+        let line = Line::from(vec![
+            Span::raw("  "),
+            Span::styled(label_padded, t.dim()),
+            value_span,
+        ]);
+        f.render_widget(Paragraph::new(line), Rect { x: inner.x, y, width: inner.width, height: 1 });
+        y += 1;
+    }
+
+    // Section separator + heading for the secondary metadata.
+    if y < inner.y + inner.height - 4 {
+        y += 1;
+        f.render_widget(
+            Paragraph::new(Line::from(t.section_heading_span("details"))),
+            Rect { x: inner.x + 2, y, width: inner.width.saturating_sub(4), height: 1 },
+        );
+        y += 1;
+        for (label, value) in extract_secondary_meta(row) {
+            if y >= inner.y + inner.height - 2 { break; }
+            let label_padded = format!("{:<12}", label);
+            let line = Line::from(vec![
+                Span::raw("  "),
+                Span::styled(label_padded, t.dim()),
+                Span::styled(value, t.text()),
+            ]);
+            f.render_widget(Paragraph::new(line), Rect { x: inner.x, y, width: inner.width, height: 1 });
+            y += 1;
+        }
+    }
+
+    // Bottom hint
     f.render_widget(
-        Paragraph::new(raw)
-            .style(Style::default().fg(Color::DarkGray))
-            .scroll((app.detail_scroll, 0))
-            .wrap(Wrap { trim: false }),
-        chunks[3],
+        Paragraph::new(Line::from(vec![
+            Span::styled("Press ", t.faint()),
+            Span::styled("[Shift+R]", t.accent()),
+            Span::styled(" for raw  ", t.faint()),
+            Span::styled("[Tab]", t.accent()),
+            Span::styled(" focus", t.faint()),
+        ])),
+        Rect { x: inner.x, y: inner.y + inner.height - 1, width: inner.width, height: 1 },
     );
 }
 
-fn build_metadata(row: &VmRow) -> Vec<(&'static str, Span<'static>, Color)> {
+fn build_metadata_rows<'a>(row: &'a VmRow, t: &'a Theme) -> Vec<(&'a str, Span<'a>)> {
     vec![
-        ("Status", Span::styled(
-            format!("{} {}", state_dot(&row.state), row.state),
-            Style::default().fg(state_color(&row.state)).add_modifier(Modifier::BOLD)),
-            Color::Reset),
-        ("IP", Span::styled(
-            row.ip.clone().unwrap_or_else(|| "—".into()),
-            if row.ip.is_some() { Style::default().fg(Color::White) }
-            else { Style::default().fg(Color::DarkGray) }), Color::Reset),
-        ("Name",      Span::raw(row.name.clone()), Color::Gray),
+        ("IP",         Span::styled(row.ip.clone().unwrap_or_else(|| "—".into()),
+            if row.ip.is_some() { t.text() } else { t.faint() })),
+        ("Name",       Span::styled(row.name.clone(), t.text())),
+        ("State",      Span::styled(row.state.clone(),
+            Style::default().fg(t.state_color(&row.state)))),
     ]
 }
 
+fn extract_secondary_meta(row: &VmRow) -> Vec<(String, String)> {
+    let Some(raw) = &row.dominfo else { return vec![]; };
+    let mut keep: Vec<(String, String)> = Vec::new();
+    let interesting: &[&str] = &[
+        "UUID", "OS Type", "CPU(s)", "CPU time", "Max memory", "Used memory",
+        "Persistent", "Autostart",
+    ];
+    for line in raw.lines() {
+        let Some(colon) = line.find(':') else { continue };
+        let key = line[..colon].trim();
+        if !interesting.contains(&key) { continue; }
+        let val = line[colon+1..].trim();
+        let pretty = match key {
+            "Max memory" | "Used memory" => humanize_kib(val),
+            "CPU(s)"                     => format!("{val} vCPU"),
+            _                            => val.to_string(),
+        };
+        keep.push((key.to_string(), pretty));
+    }
+    keep
+}
+
+fn humanize_kib(s: &str) -> String {
+    let trimmed = s.trim_end_matches(" KiB");
+    if let Ok(n) = trimmed.parse::<u64>() {
+        let gib = n as f64 / 1024.0 / 1024.0;
+        if gib >= 1.0 { return format!("{gib:.2} GiB"); }
+        let mib = n as f64 / 1024.0;
+        if mib >= 1.0 { return format!("{mib:.0} MiB"); }
+    }
+    s.to_string()
+}
+
 fn draw_create(f: &mut Frame, area: Rect, app: &App) {
-    let inner = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 1 });
+    let t = &app.theme;
+    let inner = area.inner(Margin { horizontal: 2, vertical: 1 });
+    let c = &app.create;
 
     f.render_widget(
-        Paragraph::new(Span::styled("Create VM",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD))),
+        Paragraph::new(Line::from(vec![
+            Span::styled("Tab/Shift-Tab", t.accent()),
+            Span::styled(" move · ", t.faint()),
+            Span::styled("←/→", t.accent()),
+            Span::styled(" cycle distro · ", t.faint()),
+            Span::styled("Enter", t.accent()),
+            Span::styled(" create · ", t.faint()),
+            Span::styled("Esc", t.accent()),
+            Span::styled(" cancel", t.faint()),
+        ])),
         Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
-    );
-    f.render_widget(
-        Paragraph::new(Span::styled("Tab/Shift-Tab navigate · ←/→ cycle distro · Enter create · Esc cancel",
-            Style::default().fg(Color::DarkGray))),
-        Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 },
     );
 
     let labels = ["Name", "Distro", "vCPUs", "RAM (GB)", "Disk (GB)", "User"];
-    let items: Vec<ListItem> = labels.iter().enumerate().map(|(i, label)| {
-        let focused = i == app.create.field;
+    for (i, label) in labels.iter().enumerate() {
+        let focused = i == c.field;
         let bullet = if focused { "▸ " } else { "  " };
-        let value = field_value(&app.create, i);
-        let label_style = if focused {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-        ListItem::new(Line::from(vec![
-            Span::styled(format!("{bullet}{label:<10}"), label_style),
-            Span::raw(value),
-        ]))
-    }).collect();
-
-    f.render_widget(List::new(items),
-        Rect { x: inner.x, y: inner.y + 3, width: inner.width, height: 6 });
-
-    // Cursor placement on the focused text field.
-    if let Some(off) = focused_cursor_offset(&app.create) {
-        // 2 ("▸ ") + 10 (label width) = 12 chars before value
-        let cx = inner.x + 12 + off as u16;
-        let cy = inner.y + 3 + app.create.field as u16;
-        f.set_cursor_position((cx, cy));
+        let label_pad = format!("{:<11}", label);
+        let value = field_value(c, i);
+        let label_style = if focused { t.accent() } else { t.dim() };
+        let line = Line::from(vec![
+            Span::styled(bullet, label_style),
+            Span::styled(label_pad, label_style),
+            Span::styled(value, t.text()),
+        ]);
+        f.render_widget(Paragraph::new(line),
+            Rect { x: inner.x, y: inner.y + 2 + i as u16, width: inner.width, height: 1 });
     }
 }
 
@@ -286,8 +426,7 @@ fn field_value(c: &CreateForm, i: usize) -> String {
             Some(name) => {
                 let pulled = c.distro_pulled.get(c.distro_idx).copied().unwrap_or(false);
                 let badge = if pulled { "● pulled" } else { "○ not pulled (auto-download)" };
-                format!("{name}  ({}/{})   {badge}",
-                    c.distro_idx + 1, c.distros.len())
+                format!("{name}  ({}/{})   {badge}", c.distro_idx + 1, c.distros.len())
             }
             None => String::new(),
         },
@@ -302,136 +441,303 @@ fn field_value(c: &CreateForm, i: usize) -> String {
     }
 }
 
-fn focused_cursor_offset(c: &CreateForm) -> Option<usize> {
-    match c.field {
-        0 => Some(c.name.cursor),
-        1 => None,
-        2 => Some(c.cpus.cursor),
-        3 => Some(c.memory_gb.cursor),
-        4 => Some(c.disk_gb.cursor),
-        5 => if c.user.value.trim().is_empty() { None } else { Some(c.user.cursor) },
-        _ => None,
+fn place_create_cursor(f: &mut Frame, app: &App, body: Rect) {
+    // Detail/content pane lives in body[1] after the layout split, but at
+    // this level we just compute approximate cursor coords inside the
+    // create form. The form is rendered with margin (2,1) inside the
+    // content pane block. Field rows start at body.y + 2 (inside block) +
+    // 2 (margin) + 0 (form header line) = body.y + 4.
+    let c = &app.create;
+    let off = match c.field {
+        0 => c.name.cursor,
+        2 => c.cpus.cursor,
+        3 => c.memory_gb.cursor,
+        4 => c.disk_gb.cursor,
+        5 if !c.user.value.trim().is_empty() => c.user.cursor,
+        _ => return,
+    };
+    // Inner content starts after the sidebar (28 cols) + content pane border (1 col)
+    // + margin (2 cols) = body.x + 31. Then 2 (bullet) + 11 (label) = +13.
+    let cx = body.x + 28 + 1 + 2 + 2 + 11 + off as u16;
+    let cy = body.y + 1 + 1 + 2 + c.field as u16; // border(1) + margin(1) + header(2) + field
+    f.set_cursor_position((cx, cy));
+}
+
+fn place_filter_cursor(f: &mut Frame, app: &App, body: Rect, _t: &Theme) {
+    // Filter renders inside sidebar at inner.y (which is body.y + 1 for the border).
+    // Sidebar inner x = body.x + 1. Filter "/" + " " takes 3 chars before value.
+    let cx = body.x + 1 + 3 + app.filter_input.cursor as u16;
+    let cy = body.y + 1;
+    f.set_cursor_position((cx, cy));
+}
+
+fn draw_help(f: &mut Frame, area: Rect, t: &Theme) {
+    let inner = area.inner(Margin { horizontal: 3, vertical: 1 });
+    let sections: &[(&str, &[(&str, &str)])] = &[
+        ("Navigation", &[
+            ("↑ ↓ / k j",        "select VM in the sidebar"),
+            ("Tab",              "switch focus between sidebar and detail"),
+            ("PgUp / PgDn",      "scroll the detail pane"),
+            ("/",                "filter VMs by name"),
+            ("o",                "cycle sort (name / state / ip)"),
+        ]),
+        ("VM lifecycle", &[
+            ("s · t · r",        "start · stop · restart selected"),
+            ("c",                "create a new VM"),
+            ("d",                "delete selected (with confirmation)"),
+        ]),
+        ("View the console", &[
+            ("e",                "attach serial console (Ctrl-] to exit)"),
+            ("v",                "show native VNC connect info as a toast"),
+            ("b",                "open VNC in a browser (with QR for mobile)"),
+        ]),
+        ("View toggles", &[
+            ("Shift+R",          "structured view ↔ raw virsh dominfo"),
+        ]),
+        ("General", &[
+            ("?",                "this screen"),
+            ("q · Esc",          "go back / quit"),
+            ("Ctrl-C",           "force quit"),
+        ]),
+    ];
+
+    let mut y = inner.y;
+    for (title, rows) in sections {
+        if y >= inner.y + inner.height { break; }
+        f.render_widget(
+            Paragraph::new(Line::from(t.section_heading_span(title))),
+            Rect { x: inner.x, y, width: inner.width, height: 1 },
+        );
+        y += 1;
+        for (key, label) in *rows {
+            if y >= inner.y + inner.height { break; }
+            let line = Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{key:<14}"), t.accent()),
+                Span::styled((*label).to_string(), t.text()),
+            ]);
+            f.render_widget(Paragraph::new(line),
+                Rect { x: inner.x, y, width: inner.width, height: 1 });
+            y += 1;
+        }
+        y += 1;
     }
 }
 
-fn draw_help(f: &mut Frame, area: Rect) {
-    let inner = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 1 });
-    let body = "\
-qvm — keyboard reference
-
-NAVIGATION
-  ↑ ↓ / k j        move selection in the sidebar
-  PgUp PgDn        scroll the detail pane
-  /                filter VMs by name (Enter applies, Esc cancels)
-  o                cycle sort (name / state / ip)
-
-VM ACTIONS
-  c                create new VM (form inline)
-  s · t · r        start · stop · restart selected
-  d                delete selected (y/n confirm in status bar)
-  v                show VNC connect info as a toast
-  e                attach the guest serial console (Ctrl-] to exit)
-
-GENERAL
-  ?                this screen
-  q · Esc          back · quit
-  Ctrl-C           force quit
-";
-    f.render_widget(
-        Paragraph::new(body).wrap(Wrap { trim: false })
-            .style(Style::default().fg(Color::Gray)),
-        inner,
-    );
-}
-
-fn draw_empty(f: &mut Frame, area: Rect) {
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled("No virtual machines yet.",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)))
-            .alignment(Alignment::Center),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Press ", Style::default().fg(Color::DarkGray)),
-            Span::styled("c", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled(" to create your first VM.", Style::default().fg(Color::DarkGray)),
-        ]).alignment(Alignment::Center),
-        Line::from(vec![
-            Span::styled("Press ", Style::default().fg(Color::DarkGray)),
-            Span::styled("?", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled(" for help · ", Style::default().fg(Color::DarkGray)),
-            Span::styled("q", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled(" to quit.", Style::default().fg(Color::DarkGray)),
-        ]).alignment(Alignment::Center),
+fn draw_empty(f: &mut Frame, area: Rect, t: &Theme) {
+    let art = [
+        "                                    ",
+        "       ╔═══════════════╗            ",
+        "       ║  ▁▁▁▁▁▁▁▁▁▁▁  ║            ",
+        "       ║  ▍ ▍ ▍ ▍ ▍ ▍  ║            ",
+        "       ║  ▔▔▔▔▔▔▔▔▔▔▔  ║            ",
+        "       ╚═══════════════╝            ",
+        "                                    ",
     ];
+    let mut lines: Vec<Line<'_>> = art.iter()
+        .map(|s| Line::from(Span::styled(s.to_string(), t.faint())))
+        .collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled("No virtual machines yet.", t.bold()))
+        .alignment(Alignment::Center));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled("Press ", t.dim()),
+        Span::styled("[c]", t.accent()),
+        Span::styled(" to create your first VM.", t.dim()),
+    ]).alignment(Alignment::Center));
+    lines.push(Line::from(vec![
+        Span::styled("Or run ", t.faint()),
+        Span::styled("qvm doctor", t.accent()),
+        Span::styled(" in a shell to check the host setup.", t.faint()),
+    ]).alignment(Alignment::Center));
+
+    let total = lines.len() as u16;
+    let pad_top = area.height.saturating_sub(total) / 2;
+    let rect = Rect {
+        x: area.x,
+        y: area.y + pad_top,
+        width: area.width,
+        height: total.min(area.height),
+    };
     f.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 2 }),
+        Paragraph::new(lines).wrap(Wrap { trim: false }).alignment(Alignment::Center),
+        rect,
     );
 }
 
-fn draw_narrow_body(f: &mut Frame, area: Rect, app: &App) {
-    // Just show the sidebar at full width for very narrow terminals.
+fn draw_narrow_body(f: &mut Frame, area: Rect, app: &mut App) {
     draw_sidebar(f, area, app);
 }
 
-// ── status bar ────────────────────────────────────────────────────────────────
+// ── toast + action bar ────────────────────────────────────────────────────────
 
-fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
-    let lines = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(area);
-
-    // Line 1: contextual confirm OR key hints.
-    if let Mode::ConfirmDelete = app.mode {
-        let name = app.selected_name().unwrap_or_default();
-        let line = Line::from(vec![
-            Span::styled(format!(" Delete '{name}' and all its data? "),
-                Style::default().fg(Color::White).bg(Color::Red)
-                    .add_modifier(Modifier::BOLD)),
-            Span::raw("  "),
-            Span::styled("[y]es", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::raw("  "),
-            Span::styled("[n]o", Style::default().fg(Color::Gray)),
-        ]);
-        f.render_widget(Paragraph::new(line), lines[0]);
-    } else {
-        f.render_widget(
-            Paragraph::new(hint_text(&app.mode))
-                .style(Style::default().fg(Color::Gray)),
-            lines[0],
-        );
-    }
-
-    // Line 2: refresh ticker + toast.
-    let refreshed = app.last_refresh
-        .map(|t| format!("refreshed {}s ago · sort {}", t.elapsed().as_secs(), app.sort.label()))
-        .unwrap_or_else(|| "—".into());
-    let left = Span::styled(refreshed, Style::default().fg(Color::DarkGray));
-    let mut spans: Vec<Span> = vec![left, Span::raw("  ")];
-    if let Some(t) = app.current_toast() {
-        let (text, style) = match t {
-            Toast::Ok(m)  => (m.clone(), Style::default().fg(Color::Green)),
+fn draw_toast_line(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    if let Some(toast) = app.current_toast() {
+        let (text, style) = match toast {
+            Toast::Ok(m)  => (m.clone(),
+                Style::default().fg(t.ok).add_modifier(Modifier::BOLD)),
             Toast::Err(m) => (m.clone(),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                Style::default().fg(t.err).add_modifier(Modifier::BOLD)),
         };
-        spans.push(Span::styled(text, style));
+        let line = Line::from(vec![
+            Span::raw(" "),
+            Span::styled("●", style),
+            Span::raw(" "),
+            Span::styled(text, t.text()),
+        ]);
+        f.render_widget(Paragraph::new(line), area);
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), lines[1]);
 }
 
-fn hint_text(mode: &Mode) -> String {
-    match mode {
-        Mode::Detail | Mode::EmptyState | Mode::Filter => {
-            " ↑↓ select · s start · t stop · r restart · e console · d delete · c create · v vnc · / filter · o sort · ? help · q quit".to_string()
+fn draw_action_bar(f: &mut Frame, area: Rect, app: &mut App) {
+    // Owned copy — having `&app.theme` alive would conflict with
+    // `&mut app.action_hits` below.
+    let t = app.theme.clone();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(t.border_style(false));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Decide which actions are enabled given current selection state.
+    let state = app.selected_row().map(|r| r.state.clone()).unwrap_or_default();
+    let running = state == "running";
+    let has_selection = !app.rows.is_empty();
+
+    let row1_in_create = matches!(app.mode, Mode::CreateForm);
+    let row1 = if row1_in_create {
+        vec![("Tab", "Move", true), ("←/→", "Distro", true), ("Enter", "Create", true), ("Esc", "Cancel", true)]
+    } else if matches!(app.mode, Mode::ConfirmDelete) {
+        vec![("y", "Confirm Delete", true), ("n", "Cancel", true), ("Esc", "Cancel", true)]
+    } else {
+        vec![
+            ("s", "Start",   has_selection && !running),
+            ("t", "Stop",    has_selection &&  running),
+            ("r", "Restart", has_selection &&  running),
+            ("e", "Console", has_selection),
+            ("b", "Browser", has_selection),
+            ("d", "Delete",  has_selection),
+        ]
+    };
+
+    let row2 = if row1_in_create || matches!(app.mode, Mode::ConfirmDelete) {
+        vec![]
+    } else {
+        vec![
+            ("c", "Create",  true),
+            ("v", "VNC info", has_selection),
+            ("/", "Filter",  true),
+            ("o", "Sort",    true),
+            ("?", "Help",    true),
+            ("q", "Quit",    true),
+        ]
+    };
+
+    draw_action_row(f, Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 }, &t, &row1, &mut app.action_hits);
+    if !row2.is_empty() {
+        draw_action_row(f, Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 }, &t, &row2, &mut app.action_hits);
+    }
+}
+
+fn draw_action_row(f: &mut Frame, area: Rect, t: &Theme, items: &[(&str, &str, bool)], hits: &mut Vec<(Rect, char)>) {
+    let mut spans: Vec<Span<'_>> = vec![Span::raw("  ")];
+    let mut x_offset: u16 = 2;
+    for (i, (key, label, enabled)) in items.iter().enumerate() {
+        if i > 0 { spans.push(Span::raw("   ")); x_offset += 3; }
+        let key_style = if *enabled {
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(t.text_faint)
+        };
+        let lbl_style = if *enabled { t.text() } else { t.faint().add_modifier(Modifier::DIM) };
+        spans.push(Span::styled("[", t.faint()));
+        spans.push(Span::styled((*key).to_string(), key_style));
+        spans.push(Span::styled("]", t.faint()));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled((*label).to_string(), lbl_style));
+
+        // Hit-test region for this button. Only register if enabled.
+        if *enabled {
+            // Use the first char of the key string as the lookup char.
+            // For multi-char keys (Tab, Enter, Esc) we don't register mouse hits.
+            if let Some(c) = key.chars().next() {
+                if key.chars().count() == 1 {
+                    let button_w = (key.len() + 2 + 1 + label.len()) as u16; // [k] label
+                    let r = Rect { x: area.x + x_offset, y: area.y, width: button_w, height: 1 };
+                    hits.push((r, c));
+                    x_offset += button_w;
+                } else {
+                    let button_w = (key.len() + 2 + 1 + label.len()) as u16;
+                    x_offset += button_w;
+                }
+            }
+        } else {
+            let button_w = (key.len() + 2 + 1 + label.len()) as u16;
+            x_offset += button_w;
         }
-        Mode::CreateForm  => " Tab/Shift-Tab move · ←/→ cycle distro · Enter create · Esc cancel".to_string(),
-        Mode::ConfirmDelete => String::new(), // line 1 handled above
-        Mode::Help        => " any key to dismiss".to_string(),
     }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-// Keep public so doc-tests / external callers can import Sort if needed.
+// ── confirm-delete modal ──────────────────────────────────────────────────────
+
+fn draw_confirm_dialog(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    let name = app.selected_name().unwrap_or_default();
+
+    let dialog_w: u16 = 48;
+    let dialog_h: u16 = 9;
+    let r = centered(area, dialog_w, dialog_h);
+
+    // Render Clear underneath so background gets blanked.
+    f.render_widget(Clear, r);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.err))
+        .title(Span::styled("  ⚠  Delete VM  ",
+            Style::default().fg(t.err).add_modifier(Modifier::BOLD)));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+
+    let body = vec![
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("  Delete ", t.text()),
+            Span::styled(format!("'{name}'"),
+                Style::default().fg(t.err).add_modifier(Modifier::BOLD)),
+            Span::styled("?", t.text()),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "  This removes the disk, config and cloud-init seed.",
+            t.dim(),
+        )),
+        Line::from(Span::styled("  It cannot be undone.", t.dim())),
+        Line::raw(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("[y]", Style::default().fg(t.err).add_modifier(Modifier::BOLD)),
+            Span::styled(" Yes, delete   ", t.text()),
+            Span::styled("[n]", t.accent()),
+            Span::styled(" / ", t.faint()),
+            Span::styled("[Esc]", t.accent()),
+            Span::styled(" Cancel", t.text()),
+        ]),
+    ];
+    f.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), inner);
+}
+
+fn centered(area: Rect, w: u16, h: u16) -> Rect {
+    let x = area.x + area.width.saturating_sub(w) / 2;
+    let y = area.y + area.height.saturating_sub(h) / 2;
+    Rect { x, y, width: w.min(area.width), height: h.min(area.height) }
+}
+
+// Keep Sort referenced so import isn't unused.
 #[allow(dead_code)]
 fn _sort_export(_: Sort) {}

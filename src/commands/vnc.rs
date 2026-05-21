@@ -57,9 +57,15 @@ fn run_browser(name: &str, bind: &str, ep: VncEndpoint) -> Result<()> {
     let dial = if bind == "0.0.0.0" { "127.0.0.1" } else { bind };
     let host_ip = detect_host_ip().unwrap_or_else(|| "<this-host>".into());
 
+    let url = format!(
+        "http://{host_ip}:{DEFAULT_WS_PORT}/vnc_lite.html?host={host_ip}&port={DEFAULT_WS_PORT}&autoconnect=true&resize=scale&reconnect=true",
+    );
+
     println!("Browser VNC for '{name}':");
     println!("  Open in any browser on this LAN:");
-    println!("    http://{host_ip}:{DEFAULT_WS_PORT}/vnc_lite.html?host={host_ip}&port={DEFAULT_WS_PORT}&autoconnect=true&resize=scale&reconnect=true");
+    println!("    {url}");
+    println!();
+    print_qr(&url);
     println!();
     println!("Press Ctrl-C to stop the bridge.");
     println!();
@@ -79,6 +85,33 @@ fn detect_host_ip() -> Option<String> {
     out.split_whitespace()
         .find(|s| !s.starts_with("127.") && s.contains('.'))
         .map(str::to_string)
+}
+
+/// Render an ASCII QR of the given URL using Unicode half-block glyphs.
+/// Lets the user scan the URL from a phone instead of typing it.
+/// Errors are tolerated silently — the URL above is the authoritative copy.
+fn print_qr(url: &str) {
+    use qrcode::render::unicode::Dense1x2;
+    use qrcode::{EcLevel, QrCode, Version};
+
+    // Use M error correction and let the encoder pick the version — keeps
+    // the QR compact (a typical 65-char URL fits in version 4 ≈ 33×33,
+    // rendered with Dense1x2 that's ~33 cols × 17 rows of terminal cells).
+    let code = match QrCode::with_error_correction_level(url, EcLevel::M) {
+        Ok(c) => c,
+        Err(_) => return, // too long or other rendering issue
+    };
+    let _ = Version::Normal; // referenced only to ensure import is used
+    let art = code.render::<Dense1x2>()
+        .dark_color(Dense1x2::Light)
+        .light_color(Dense1x2::Dark)
+        // ↑ inverted so the QR is bright on a dark terminal. Most VNC
+        // homelab users run dark themes; this scans cleanly.
+        .quiet_zone(true)
+        .build();
+    for line in art.lines() {
+        println!("    {line}");
+    }
 }
 
 fn print_info(name: &str, bind: &str, ep: VncEndpoint) {
