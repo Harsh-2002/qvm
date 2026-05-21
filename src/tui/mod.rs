@@ -12,6 +12,7 @@
 pub mod app;
 mod events;
 mod forms;
+pub mod onboard;
 mod theme;
 mod ui;
 

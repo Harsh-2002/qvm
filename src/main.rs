@@ -153,9 +153,15 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
     // No subcommand → launch the interactive TUI.
     let Some(cmd) = &cli.cmd else {
         if !cfg_path.exists() {
-            return Err(qvm::error::Error::User(format!(
-                "config not found at {}\nRun: sudo qvm init", cfg_path.display()
-            )));
+            // First-run experience. Guides through bridge, SSH keys,
+            // storage paths and (optionally) a first image pull, then
+            // writes /etc/qvm/config.toml. Falls back to the old
+            // text-only error if the TUI can't open (no PTY, etc).
+            if let Err(e) = qvm::tui::onboard::run(cfg_path) {
+                return Err(qvm::error::Error::User(format!(
+                    "onboarding failed: {e}\nFall back to: sudo qvm init"
+                )));
+            }
         }
         let cfg = Config::load(Some(cfg_path))?;
         return qvm::tui::run(&cfg);

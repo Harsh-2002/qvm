@@ -7,20 +7,20 @@ use std::fs;
 
 /// Every external program qvm depends on, plus what package provides it
 /// on each distro family.
-struct Dep {
-    binary: &'static str,
-    why: &'static str,
-    packages: Packages,
+pub struct Dep {
+    pub binary: &'static str,
+    pub why: &'static str,
+    pub packages: Packages,
 }
 
-struct Packages {
-    apt:    &'static str,  // debian, ubuntu
-    dnf:    &'static str,  // fedora, rocky, alma, rhel
-    apk:    &'static str,  // alpine
-    pacman: &'static str,  // arch
+pub struct Packages {
+    pub apt:    &'static str,  // debian, ubuntu
+    pub dnf:    &'static str,  // fedora, rocky, alma, rhel
+    pub apk:    &'static str,  // alpine
+    pub pacman: &'static str,  // arch
 }
 
-const DEPS: &[Dep] = &[
+pub const DEPS: &[Dep] = &[
     Dep {
         binary: "virsh",
         why: "manage libvirt domains (start, stop, list, undefine)",
@@ -84,7 +84,7 @@ const DEPS: &[Dep] = &[
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Family {
+pub enum Family {
     Debian,    // debian, ubuntu, mint, ...
     Fedora,    // fedora, rocky, alma, rhel, centos
     Alpine,
@@ -93,7 +93,7 @@ enum Family {
 }
 
 impl Family {
-    fn from_os_release() -> Self {
+    pub fn from_os_release() -> Self {
         let raw = match fs::read_to_string("/etc/os-release") {
             Ok(s) => s,
             Err(_) => return Family::Unknown,
@@ -116,7 +116,7 @@ impl Family {
         else { Family::Unknown }
     }
 
-    fn install_cmd(&self) -> Option<&'static str> {
+    pub fn install_cmd(&self) -> Option<&'static str> {
         match self {
             Family::Debian => Some("apt-get install -y"),
             Family::Fedora => Some("dnf install -y"),
@@ -126,7 +126,7 @@ impl Family {
         }
     }
 
-    fn packages<'a>(&self, p: &'a Packages) -> &'a str {
+    pub fn packages<'a>(&self, p: &'a Packages) -> &'a str {
         match self {
             Family::Debian => p.apt,
             Family::Fedora => p.dnf,
@@ -136,7 +136,7 @@ impl Family {
         }
     }
 
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         match self {
             Family::Debian => "Debian/Ubuntu",
             Family::Fedora => "Fedora/RHEL/Rocky/Alma",

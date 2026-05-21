@@ -153,22 +153,24 @@ fn run_wizard(config_path: &Path) -> Result<bool> {
     Ok(want_images)
 }
 
-struct WizardAnswers<'a> {
-    bridge:         &'a str,
-    distro:         &'a str,
-    cpus:           u32,
-    memory_gb:      u32,
-    disk_gb:        u32,
-    autostart:      bool,
-    grub_timeout:   u32,
-    vnc_bind:       &'a str,
-    ssh_keys:       &'a [String],
-    images_path:    &'a str,
-    vms_path:       &'a str,
-    cloudinit_path: &'a str,
+pub struct WizardAnswers<'a> {
+    pub bridge:         &'a str,
+    pub distro:         &'a str,
+    pub cpus:           u32,
+    pub memory_gb:      u32,
+    pub disk_gb:        u32,
+    pub autostart:      bool,
+    pub grub_timeout:   u32,
+    pub vnc_bind:       &'a str,
+    pub ssh_keys:       &'a [String],
+    pub images_path:    &'a str,
+    pub vms_path:       &'a str,
+    pub cloudinit_path: &'a str,
 }
 
-fn render_config(a: WizardAnswers<'_>) -> String {
+/// Render the final `/etc/qvm/config.toml`. Exposed so the TUI onboarding
+/// wizard (`src/tui/onboard.rs`) writes the same TOML as `qvm init`.
+pub fn render_config(a: WizardAnswers<'_>) -> String {
     let keys_toml = if a.ssh_keys.is_empty() {
         "    # \"ssh-ed25519 AAAA... you@host\",\n".to_string()
     } else {
@@ -238,7 +240,7 @@ ssh_keys = [
 }
 
 /// Escape a string for use inside a TOML basic (double-quoted) string.
-fn toml_escape(s: &str) -> String {
+pub fn toml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
