@@ -9,4 +9,3 @@ pub mod lifecycle;
 pub mod pull;
 pub mod resources;
 pub mod vnc;
-pub mod web;

@@ -117,15 +117,6 @@ enum Cmd {
         /// Non-interactive: assume yes to the install prompt.
         #[arg(long, short = 'y')] yes: bool,
     },
-    /// Launch a minimal web UI in the foreground (Ctrl-C to stop).
-    /// Defaults to http://127.0.0.1:8080 — bind to 0.0.0.0 to expose on LAN.
-    Web {
-        /// IP to bind the HTTP server to.
-        #[arg(long, default_value = "127.0.0.1")] bind: String,
-        /// TCP port for the HTTP server.
-        #[arg(short = 'p', long, default_value_t = 8080)] port: u16,
-    },
-
     /// Print shell completion script (bash | zsh | fish | elvish | powershell).
     Completions { shell: Shell },
 }
@@ -207,7 +198,5 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
         Cmd::SetCpu { name, vcpus } => commands::resources::set_cpu(name, *vcpus),
         Cmd::SetRam { name, gb }    => commands::resources::set_ram(name, *gb),
         Cmd::ResizeDisk { name, size } => commands::resources::resize_disk(&cfg, name, size),
-
-        Cmd::Web { bind, port } => commands::web::run(cfg.clone(), bind.clone(), *port),
     }
 }

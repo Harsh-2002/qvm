@@ -3,9 +3,12 @@
 use qvm::tui::{App, Mode};
 
 #[test]
-fn fresh_app_starts_in_table_mode() {
+fn fresh_app_starts_in_empty_state() {
+    // With no rows yet, the app's default Mode is EmptyState — the friendly
+    // "no VMs, press c to create" pane. Once refresh() loads rows, Detail
+    // takes over.
     let app = App::new();
-    assert_eq!(app.mode, Mode::Table);
+    assert_eq!(app.mode, Mode::EmptyState);
     assert_eq!(app.selected, 0);
     assert!(app.rows.is_empty());
     assert!(!app.should_quit);

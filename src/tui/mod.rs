@@ -14,7 +14,7 @@ mod events;
 mod forms;
 mod ui;
 
-use crate::cmd::run_inherit;
+use crate::cmd::run_tty;
 use crate::config::Config;
 use crate::error::Result;
 use crossterm::{
@@ -96,9 +96,12 @@ fn handle_action(
     match action {
         Action::Console => {
             if let Some(name) = app.selected_name() {
+                // virsh console is interactive — needs inherited stdin to read
+                // keypresses. run_inherit's Stdio::null on stdin gave a fatal
+                // "Cannot run interactive console without a controlling TTY".
                 suspend(terminal, || {
                     println!("(Press Ctrl-] to leave the console and return to qvm.)");
-                    run_inherit("virsh", ["console", &name])
+                    run_tty("virsh", ["console", &name])
                 })?;
                 app.toast_ok(format!("Returned from console of '{name}'"));
                 app.refresh(cfg);

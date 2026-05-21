@@ -1,281 +1,263 @@
 //! Pure render functions. No state mutation, no I/O.
+//!
+//! Layout (≥80 cols): header (1 line) · split-pane (sidebar + content) ·
+//! status bar (2 lines). On narrower terminals we collapse to a single
+//! pane and just show the sidebar list with a status bar below.
 
-use crate::tui::app::{App, Mode, Sort, Toast, VmRow};
+use crate::tui::app::{App, CreateForm, Mode, Sort, Toast, VmRow};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Row, Table, Wrap},
+    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Row, Table, Wrap},
     Frame,
 };
 
-const TITLE: &str = concat!(" qvm ", env!("CARGO_PKG_VERSION"), " ");
-const HOTKEYS_TABLE: &str =
-    "[c]reate  [s]tart  [t]op  [r]estart  [d]elete  [v]nc  [e]console  [i]nspect  \
-     [/]filter  [o]sort  [?]help  [q]uit";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),                 // header
-            Constraint::Min(5),                    // table
-            Constraint::Length(if app.current_toast().is_some() { 1 } else { 0 }),
-            Constraint::Length(2),                 // key bar
+            Constraint::Length(1),   // header
+            Constraint::Min(3),      // body (split-pane)
+            Constraint::Length(2),   // status bar (hints + toast)
         ])
         .split(area);
 
     draw_header(f, layout[0], app);
-    draw_body(f, layout[1], app);
-    if app.current_toast().is_some() {
-        draw_toast(f, layout[2], app);
-    }
-    draw_keybar(f, layout[3], app);
 
-    // Modal overlays.
-    match &app.mode {
-        Mode::CreateForm    => draw_create_modal(f, area, app),
-        Mode::DeleteConfirm => draw_confirm(f, area, app),
-        Mode::Inspect { content, scroll } => draw_popup(f, area, "Inspect", content, Some(*scroll)),
-        Mode::Vnc { content } => draw_popup(f, area, "VNC", content, None),
-        Mode::Help          => draw_help(f, area),
-        Mode::Filter        => draw_filter(f, area, app),
-        Mode::Table         => {}
+    if layout[1].width < 80 {
+        // Very narrow terminals — single-pane fallback.
+        draw_narrow_body(f, layout[1], app);
+    } else {
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(26), Constraint::Min(40)])
+            .split(layout[1]);
+        draw_sidebar(f, body[0], app);
+        draw_content(f, body[1], app);
     }
+
+    draw_status_bar(f, layout[2], app);
 }
+
+// ── header ────────────────────────────────────────────────────────────────────
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    let visible = app.visible_count();
-    let total   = app.rows.len();
     let running = app.rows.iter().filter(|r| r.state == "running").count();
+    let total   = app.rows.len();
     let summary = if app.filter.is_empty() {
-        format!(" {total} VMs ({running} running) ")
+        format!(" {total} VMs · {running} running ")
     } else {
-        format!(" {visible}/{total} VMs (filter: {}) ", app.filter)
+        let v = app.visible_count();
+        format!(" {v}/{total} VMs · filter: {} ", app.filter)
     };
 
-    let line = Line::from(vec![
-        Span::styled(TITLE,    Style::default().bg(Color::DarkGray).fg(Color::White).bold()),
-        Span::raw("  "),
-        Span::styled(summary, Style::default().fg(Color::Gray)),
-        Span::raw("  "),
-        Span::styled(format!("sort: {}", app.sort.label()),
-                     Style::default().fg(Color::DarkGray)),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
+    let cols = area.width as usize;
+    let left  = format!(" qvm {VERSION} ");
+    let mid   = format!(" {} ", app.host_label);
+    let right = summary;
+    // pad middle so total fits cols
+    let pad = cols.saturating_sub(left.len() + mid.len() + right.len());
+    let bar = format!("{left}{mid}{:pad$}{right}", "", pad = pad);
+
+    let style = Style::default().bg(Color::DarkGray).fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    f.render_widget(Paragraph::new(bar).style(style), area);
 }
 
-fn draw_body(f: &mut Frame, area: Rect, app: &App) {
-    let rows: Vec<&VmRow> = app.visible();
-    if rows.is_empty() {
-        draw_empty(f, area, app);
-        return;
+// ── sidebar ───────────────────────────────────────────────────────────────────
+
+fn draw_sidebar(f: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::RIGHT)
+        .border_type(BorderType::Plain)
+        .title(Span::styled(" VIRTUAL MACHINES ",
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut y = inner.y;
+
+    // Filter input line (only visible when filtering or filter is set).
+    if matches!(app.mode, Mode::Filter) || !app.filter.is_empty() {
+        let active = matches!(app.mode, Mode::Filter);
+        let prefix = if active { "/" } else { " filter:" };
+        let value = if active { &app.filter_input.value } else { &app.filter };
+        let style = if active {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let r = Rect { x: inner.x, y, width: inner.width.saturating_sub(1), height: 1 };
+        f.render_widget(Paragraph::new(format!("{prefix} {value}")).style(style), r);
+        if active {
+            // Cursor position inside the filter input.
+            let cx = inner.x + (prefix.len() + 1) as u16 + app.filter_input.cursor as u16;
+            f.set_cursor_position((cx, y));
+        }
+        y = y.saturating_add(1);
     }
 
-    let widths = [
-        Constraint::Percentage(28),
-        Constraint::Length(12),
-        Constraint::Length(18),
-    ];
-
-    let header = Row::new(vec!["NAME", "STATE", "IP"])
-        .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD));
-
-    let body_rows: Vec<Row> = rows.iter().enumerate().map(|(i, r)| {
+    let avail_h = inner.height.saturating_sub(y - inner.y + 1) as usize; // reserve 1 for [+] new
+    let rows = app.visible();
+    let items: Vec<ListItem> = rows.iter().enumerate().take(avail_h).map(|(i, r)| {
         let selected = i == app.selected;
+        let dot = state_dot(&r.state);
         let prefix = if selected { "› " } else { "  " };
         let name_style = if selected {
-            Style::default().fg(Color::White).bg(Color::Blue).bold()
+            Style::default().fg(Color::White).bg(Color::Blue)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::Gray)
         };
-        let state_style = match r.state.as_str() {
-            "running"  => Style::default().fg(Color::Green),
-            "paused"   => Style::default().fg(Color::Yellow),
-            "crashed"  => Style::default().fg(Color::Red),
-            _          => Style::default().fg(Color::DarkGray),
-        };
-        let ip_text = r.ip.as_deref().unwrap_or("—");
-        let ip_style = if r.ip.is_some() { Style::default() }
-                       else { Style::default().fg(Color::DarkGray) };
-        Row::new(vec![
-            Span::styled(format!("{prefix}{}", r.name), name_style),
-            Span::styled(r.state.clone(), state_style),
-            Span::styled(ip_text.to_string(), ip_style),
-        ])
+        ListItem::new(Line::from(vec![
+            Span::styled(prefix, name_style),
+            Span::raw(dot),
+            Span::raw(" "),
+            Span::styled(r.name.clone(), name_style),
+        ]))
     }).collect();
 
-    let table = Table::new(body_rows, widths)
-        .header(header)
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Plain));
-    f.render_widget(table, area);
-}
-
-fn draw_empty(f: &mut Frame, area: Rect, app: &App) {
-    let lines = if app.rows.is_empty() {
-        vec![
-            Line::from(""),
-            Line::from("No VMs yet.").alignment(Alignment::Center),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Press ", Style::default().fg(Color::DarkGray)),
-                Span::styled("c", Style::default().fg(Color::Yellow).bold()),
-                Span::styled(" to create your first.", Style::default().fg(Color::DarkGray)),
-            ]).alignment(Alignment::Center),
-            Line::from(vec![
-                Span::styled("Press ", Style::default().fg(Color::DarkGray)),
-                Span::styled("q", Style::default().fg(Color::Yellow).bold()),
-                Span::styled(" to quit.", Style::default().fg(Color::DarkGray)),
-            ]).alignment(Alignment::Center),
-        ]
-    } else {
-        vec![
-            Line::from(""),
-            Line::from(format!("No VMs match filter '{}'.", app.filter))
-                .alignment(Alignment::Center),
-            Line::from("Press Esc or clear with /  ").alignment(Alignment::Center),
-        ]
+    let list_area = Rect {
+        x: inner.x,
+        y,
+        width: inner.width.saturating_sub(1),
+        height: avail_h as u16,
     };
-    let p = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL))
-        .wrap(Wrap { trim: false });
-    f.render_widget(p, area);
+    f.render_widget(List::new(items), list_area);
+
+    // [+] new at the bottom of the sidebar.
+    let new_y = inner.y + inner.height.saturating_sub(1);
+    let new_style = if matches!(app.mode, Mode::CreateForm) {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    f.render_widget(
+        Paragraph::new(" [+] create  (c) ").style(new_style),
+        Rect { x: inner.x, y: new_y, width: inner.width.saturating_sub(1), height: 1 },
+    );
 }
 
-fn draw_keybar(f: &mut Frame, area: Rect, app: &App) {
-    let layout = Layout::default()
+fn state_dot(state: &str) -> &'static str {
+    match state {
+        "running" => "●",
+        "paused"  => "◐",
+        "crashed" => "✗",
+        _         => "○",
+    }
+}
+
+fn state_color(state: &str) -> Color {
+    match state {
+        "running" => Color::Green,
+        "paused"  => Color::Yellow,
+        "crashed" => Color::Red,
+        _         => Color::DarkGray,
+    }
+}
+
+// ── content pane ──────────────────────────────────────────────────────────────
+
+fn draw_content(f: &mut Frame, area: Rect, app: &App) {
+    match &app.mode {
+        Mode::Detail | Mode::ConfirmDelete | Mode::Filter => draw_detail(f, area, app),
+        Mode::CreateForm => draw_create(f, area, app),
+        Mode::Help       => draw_help(f, area),
+        Mode::EmptyState => draw_empty(f, area),
+    }
+}
+
+fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
+    let Some(row) = app.selected_row() else {
+        draw_empty(f, area);
+        return;
+    };
+    let inner_area = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 1 });
+
+    let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(area);
+        .constraints([
+            Constraint::Length(1),  // title
+            Constraint::Length(1),  // rule
+            Constraint::Length(11), // metadata table
+            Constraint::Min(2),     // dominfo scroll
+        ])
+        .split(inner_area);
+
+    // Title
     f.render_widget(
-        Paragraph::new(HOTKEYS_TABLE).style(Style::default().fg(Color::Gray)),
-        layout[0],
+        Paragraph::new(Span::styled(row.name.clone(),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD))),
+        chunks[0],
     );
-    let refreshed = app.last_refresh
-        .map(|t| format!("refreshed {}s ago", t.elapsed().as_secs()))
-        .unwrap_or_else(|| "—".into());
     f.render_widget(
-        Paragraph::new(refreshed)
+        Paragraph::new(Span::styled("─".repeat(area.width as usize / 2),
+            Style::default().fg(Color::DarkGray))),
+        chunks[1],
+    );
+
+    // Metadata KV table.
+    let metadata = build_metadata(row);
+    let kv_rows: Vec<Row> = metadata.into_iter().map(|(k, v, vc)| {
+        Row::new(vec![
+            Span::styled(format!("  {k:<10}"), Style::default().fg(Color::DarkGray)),
+            v,
+            Span::raw(""),
+        ]).style(Style::default().fg(vc))
+    }).collect();
+    let kv = Table::new(kv_rows, [Constraint::Length(14), Constraint::Min(20), Constraint::Length(0)]);
+    f.render_widget(kv, chunks[2]);
+
+    // dominfo scrollable region.
+    let raw = row.dominfo.clone().unwrap_or_else(|| "  (loading dominfo …)".into());
+    f.render_widget(
+        Paragraph::new(raw)
             .style(Style::default().fg(Color::DarkGray))
-            .alignment(Alignment::Right),
-        layout[1],
-    );
-}
-
-fn draw_toast(f: &mut Frame, area: Rect, app: &App) {
-    if let Some(toast) = app.current_toast() {
-        let (msg, style) = match toast {
-            Toast::Ok(m)  => (m.clone(), Style::default().fg(Color::Green)),
-            Toast::Err(m) => (m.clone(), Style::default().fg(Color::Red).bold()),
-        };
-        f.render_widget(Paragraph::new(msg).style(style), area);
-    }
-}
-
-// ── modals ────────────────────────────────────────────────────────────────────
-
-fn centered(area: Rect, w: u16, h: u16) -> Rect {
-    let x = area.x + area.width.saturating_sub(w) / 2;
-    let y = area.y + area.height.saturating_sub(h) / 2;
-    Rect { x, y, width: w.min(area.width), height: h.min(area.height) }
-}
-
-fn draw_popup(f: &mut Frame, area: Rect, title: &str, content: &str, scroll: Option<u16>) {
-    let w = (area.width as i32 - 8).clamp(40, 100) as u16;
-    let h = (area.height as i32 - 4).clamp(8, 30) as u16;
-    let r = centered(area, w, h);
-    f.render_widget(Clear, r);
-    let mut p = Paragraph::new(content.to_string())
-        .block(Block::default().title(format!(" {title} ")).borders(Borders::ALL))
-        .wrap(Wrap { trim: false });
-    if let Some(s) = scroll {
-        p = p.scroll((s, 0));
-    }
-    f.render_widget(p, r);
-}
-
-fn draw_confirm(f: &mut Frame, area: Rect, app: &App) {
-    let name = app.selected_name().unwrap_or_default();
-    let content = format!("Delete '{name}' and all its data?\n\nThis cannot be undone.\n\n[y] confirm   [n] cancel");
-    let r = centered(area, 56, 9);
-    f.render_widget(Clear, r);
-    f.render_widget(
-        Paragraph::new(content)
-            .block(Block::default().title(" Confirm delete ")
-                  .borders(Borders::ALL)
-                  .border_style(Style::default().fg(Color::Red)))
-            .alignment(Alignment::Center)
+            .scroll((app.detail_scroll, 0))
             .wrap(Wrap { trim: false }),
-        r,
+        chunks[3],
     );
 }
 
-fn draw_help(f: &mut Frame, area: Rect) {
-    let body = "\
-NAVIGATION
-  ↑ ↓ / k j         move selection
-  /                 filter by name
-  o                 cycle sort (name / state / ip)
-
-VM ACTIONS
-  c                 create a new VM
-  s / t / r         start / stop / restart selected
-  d                 delete selected (confirm with y)
-  v                 show VNC connect info
-  e                 open serial console (Ctrl-] to exit)
-  i                 inspect (full `virsh dominfo`)
-
-GENERAL
-  ?                 this screen
-  Ctrl-C, q, Esc    quit
-";
-    let r = centered(area, 70, 22);
-    f.render_widget(Clear, r);
-    f.render_widget(
-        Paragraph::new(body)
-            .block(Block::default().title(" Help ").borders(Borders::ALL))
-            .wrap(Wrap { trim: false }),
-        r,
-    );
+fn build_metadata(row: &VmRow) -> Vec<(&'static str, Span<'static>, Color)> {
+    vec![
+        ("Status", Span::styled(
+            format!("{} {}", state_dot(&row.state), row.state),
+            Style::default().fg(state_color(&row.state)).add_modifier(Modifier::BOLD)),
+            Color::Reset),
+        ("IP", Span::styled(
+            row.ip.clone().unwrap_or_else(|| "—".into()),
+            if row.ip.is_some() { Style::default().fg(Color::White) }
+            else { Style::default().fg(Color::DarkGray) }), Color::Reset),
+        ("Name",      Span::raw(row.name.clone()), Color::Gray),
+    ]
 }
 
-fn draw_filter(f: &mut Frame, area: Rect, app: &App) {
-    let r = centered(area, 50, 3);
-    f.render_widget(Clear, r);
-    let v = &app.filter_input.value;
-    let display = format!("/ {v}");
-    f.render_widget(
-        Paragraph::new(display)
-            .block(Block::default().title(" Filter (Enter=apply  Esc=cancel) ").borders(Borders::ALL)),
-        r,
-    );
-    // Cursor position: 1 (start of border) + 2 ("/ ") + cursor offset.
-    let cx = r.x + 1 + 2 + app.filter_input.cursor as u16;
-    let cy = r.y + 1;
-    f.set_cursor_position((cx, cy));
-}
+fn draw_create(f: &mut Frame, area: Rect, app: &App) {
+    let inner = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 1 });
 
-fn draw_create_modal(f: &mut Frame, area: Rect, app: &App) {
-    let w = 60u16;
-    let h = 18u16;
-    let r = centered(area, w, h);
-    f.render_widget(Clear, r);
     f.render_widget(
-        Block::default().title(" Create VM ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
-        r,
+        Paragraph::new(Span::styled("Create VM",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD))),
+        Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled("Tab/Shift-Tab navigate · ←/→ cycle distro · Enter create · Esc cancel",
+            Style::default().fg(Color::DarkGray))),
+        Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 },
     );
 
-    let inner = Rect { x: r.x + 2, y: r.y + 1, width: r.width - 4, height: r.height - 2 };
     let labels = ["Name", "Distro", "vCPUs", "RAM (GB)", "Disk (GB)", "User"];
     let items: Vec<ListItem> = labels.iter().enumerate().map(|(i, label)| {
         let focused = i == app.create.field;
         let bullet = if focused { "▸ " } else { "  " };
-        let value = field_value(app, i);
+        let value = field_value(&app.create, i);
         let label_style = if focused {
-            Style::default().fg(Color::Yellow).bold()
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -285,69 +267,171 @@ fn draw_create_modal(f: &mut Frame, area: Rect, app: &App) {
         ]))
     }).collect();
 
-    let list = List::new(items);
-    f.render_widget(list, Rect {
-        x: inner.x, y: inner.y, width: inner.width, height: 6,
-    });
+    f.render_widget(List::new(items),
+        Rect { x: inner.x, y: inner.y + 3, width: inner.width, height: 6 });
 
-    // Hint line.
-    f.render_widget(
-        Paragraph::new("Tab/Shift-Tab move • Enter create • Esc cancel  (←/→ cycles distro)")
-            .style(Style::default().fg(Color::DarkGray)),
-        Rect { x: inner.x, y: inner.y + 8, width: inner.width, height: 1 },
-    );
-
-    // Distro list hint (pulled vs missing).
-    let distro_legend = match app.create.distros.get(app.create.distro_idx) {
-        Some(d) => format!("({}/{})  ←/→ to cycle", app.create.distro_idx + 1, app.create.distros.len())
-            + &format!("   {d}"),
-        None => String::new(),
-    };
-    f.render_widget(
-        Paragraph::new(distro_legend)
-            .style(Style::default().fg(Color::DarkGray)),
-        Rect { x: inner.x, y: inner.y + 10, width: inner.width, height: 1 },
-    );
-
-    // Cursor on the focused text field (if applicable).
-    if let Some((cx_offset, focused_text)) = focused_cursor_offset(app) {
-        let cx = inner.x + 12 + cx_offset as u16; // 2 ("▸ ") + 10 (label width) = 12
-        let cy = inner.y + app.create.field as u16;
-        // Only set cursor for text fields, not the distro picker.
-        if focused_text { f.set_cursor_position((cx, cy)); }
+    // Cursor placement on the focused text field.
+    if let Some(off) = focused_cursor_offset(&app.create) {
+        // 2 ("▸ ") + 10 (label width) = 12 chars before value
+        let cx = inner.x + 12 + off as u16;
+        let cy = inner.y + 3 + app.create.field as u16;
+        f.set_cursor_position((cx, cy));
     }
 }
 
-fn field_value(app: &App, i: usize) -> String {
+fn field_value(c: &CreateForm, i: usize) -> String {
     match i {
-        0 => app.create.name.value.clone(),
-        1 => app.create.distros.get(app.create.distro_idx).cloned().unwrap_or_default(),
-        2 => app.create.cpus.value.clone(),
-        3 => app.create.memory_gb.value.clone(),
-        4 => app.create.disk_gb.value.clone(),
+        0 => c.name.value.clone(),
+        1 => match c.distros.get(c.distro_idx) {
+            Some(name) => {
+                let pulled = c.distro_pulled.get(c.distro_idx).copied().unwrap_or(false);
+                let badge = if pulled { "● pulled" } else { "○ not pulled (auto-download)" };
+                format!("{name}  ({}/{})   {badge}",
+                    c.distro_idx + 1, c.distros.len())
+            }
+            None => String::new(),
+        },
+        2 => c.cpus.value.clone(),
+        3 => c.memory_gb.value.clone(),
+        4 => c.disk_gb.value.clone(),
         5 => {
-            let v = &app.create.user.value;
+            let v = &c.user.value;
             if v.trim().is_empty() { "(auto: vmXXXXXX)".into() } else { v.clone() }
         }
         _ => String::new(),
     }
 }
 
-fn focused_cursor_offset(app: &App) -> Option<(usize, bool)> {
-    match app.create.field {
-        0 => Some((app.create.name.cursor, true)),
-        1 => Some((0, false)), // distro picker — no cursor
-        2 => Some((app.create.cpus.cursor, true)),
-        3 => Some((app.create.memory_gb.cursor, true)),
-        4 => Some((app.create.disk_gb.cursor, true)),
-        5 => {
-            let user_blank = app.create.user.value.trim().is_empty();
-            if user_blank { Some((0, false)) }
-            else { Some((app.create.user.cursor, true)) }
-        }
+fn focused_cursor_offset(c: &CreateForm) -> Option<usize> {
+    match c.field {
+        0 => Some(c.name.cursor),
+        1 => None,
+        2 => Some(c.cpus.cursor),
+        3 => Some(c.memory_gb.cursor),
+        4 => Some(c.disk_gb.cursor),
+        5 => if c.user.value.trim().is_empty() { None } else { Some(c.user.cursor) },
         _ => None,
     }
 }
 
+fn draw_help(f: &mut Frame, area: Rect) {
+    let inner = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 1 });
+    let body = "\
+qvm — keyboard reference
+
+NAVIGATION
+  ↑ ↓ / k j        move selection in the sidebar
+  PgUp PgDn        scroll the detail pane
+  /                filter VMs by name (Enter applies, Esc cancels)
+  o                cycle sort (name / state / ip)
+
+VM ACTIONS
+  c                create new VM (form inline)
+  s · t · r        start · stop · restart selected
+  d                delete selected (y/n confirm in status bar)
+  v                show VNC connect info as a toast
+  e                attach the guest serial console (Ctrl-] to exit)
+
+GENERAL
+  ?                this screen
+  q · Esc          back · quit
+  Ctrl-C           force quit
+";
+    f.render_widget(
+        Paragraph::new(body).wrap(Wrap { trim: false })
+            .style(Style::default().fg(Color::Gray)),
+        inner,
+    );
+}
+
+fn draw_empty(f: &mut Frame, area: Rect) {
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("No virtual machines yet.",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)))
+            .alignment(Alignment::Center),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Press ", Style::default().fg(Color::DarkGray)),
+            Span::styled("c", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(" to create your first VM.", Style::default().fg(Color::DarkGray)),
+        ]).alignment(Alignment::Center),
+        Line::from(vec![
+            Span::styled("Press ", Style::default().fg(Color::DarkGray)),
+            Span::styled("?", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(" for help · ", Style::default().fg(Color::DarkGray)),
+            Span::styled("q", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(" to quit.", Style::default().fg(Color::DarkGray)),
+        ]).alignment(Alignment::Center),
+    ];
+    f.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 2 }),
+    );
+}
+
+fn draw_narrow_body(f: &mut Frame, area: Rect, app: &App) {
+    // Just show the sidebar at full width for very narrow terminals.
+    draw_sidebar(f, area, app);
+}
+
+// ── status bar ────────────────────────────────────────────────────────────────
+
+fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
+    let lines = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+
+    // Line 1: contextual confirm OR key hints.
+    if let Mode::ConfirmDelete = app.mode {
+        let name = app.selected_name().unwrap_or_default();
+        let line = Line::from(vec![
+            Span::styled(format!(" Delete '{name}' and all its data? "),
+                Style::default().fg(Color::White).bg(Color::Red)
+                    .add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled("[y]es", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled("[n]o", Style::default().fg(Color::Gray)),
+        ]);
+        f.render_widget(Paragraph::new(line), lines[0]);
+    } else {
+        f.render_widget(
+            Paragraph::new(hint_text(&app.mode))
+                .style(Style::default().fg(Color::Gray)),
+            lines[0],
+        );
+    }
+
+    // Line 2: refresh ticker + toast.
+    let refreshed = app.last_refresh
+        .map(|t| format!("refreshed {}s ago · sort {}", t.elapsed().as_secs(), app.sort.label()))
+        .unwrap_or_else(|| "—".into());
+    let left = Span::styled(refreshed, Style::default().fg(Color::DarkGray));
+    let mut spans: Vec<Span> = vec![left, Span::raw("  ")];
+    if let Some(t) = app.current_toast() {
+        let (text, style) = match t {
+            Toast::Ok(m)  => (m.clone(), Style::default().fg(Color::Green)),
+            Toast::Err(m) => (m.clone(),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        };
+        spans.push(Span::styled(text, style));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), lines[1]);
+}
+
+fn hint_text(mode: &Mode) -> String {
+    match mode {
+        Mode::Detail | Mode::EmptyState | Mode::Filter => {
+            " ↑↓ select · s start · t stop · r restart · e console · d delete · c create · v vnc · / filter · o sort · ? help · q quit".to_string()
+        }
+        Mode::CreateForm  => " Tab/Shift-Tab move · ←/→ cycle distro · Enter create · Esc cancel".to_string(),
+        Mode::ConfirmDelete => String::new(), // line 1 handled above
+        Mode::Help        => " any key to dismiss".to_string(),
+    }
+}
+
+// Keep public so doc-tests / external callers can import Sort if needed.
 #[allow(dead_code)]
-fn _coerce(_: Sort) {} // keep the enum import used; doesn't ship
+fn _sort_export(_: Sort) {}

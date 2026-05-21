@@ -25,12 +25,37 @@ where I: IntoIterator<Item = S>, S: AsRef<OsStr>
 }
 
 /// Like `run`, but discard stdout and inherit stderr (so progress shows live).
+/// stdin is null'd — appropriate for non-interactive batch programs (wget,
+/// qemu-img, virt-install). Use [`run_tty`] for interactive children.
 pub fn run_inherit<I, S>(prog: &str, args: I) -> Result<()>
 where I: IntoIterator<Item = S>, S: AsRef<OsStr>
 {
     let status = Command::new(prog)
         .args(args)
         .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|e| Error::User(format!("cannot run `{prog}`: {e}")))?;
+    if !status.success() {
+        return Err(Error::Command {
+            cmd: prog.into(),
+            status: status.code().unwrap_or(-1),
+            stderr: String::new(),
+        });
+    }
+    Ok(())
+}
+
+/// Run an interactive child: inherit ALL three stdio. Use this only when
+/// the child needs keyboard input (`virsh console`, `virsh edit`). For
+/// batch downloads/conversions, prefer [`run_inherit`] (stdin null'd).
+pub fn run_tty<I, S>(prog: &str, args: I) -> Result<()>
+where I: IntoIterator<Item = S>, S: AsRef<OsStr>
+{
+    let status = Command::new(prog)
+        .args(args)
+        .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()

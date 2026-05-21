@@ -12,4 +12,3 @@ pub mod error;
 pub mod libvirt;
 pub mod tui;
 pub mod util;
-pub mod web;

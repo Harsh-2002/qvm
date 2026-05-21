@@ -57,15 +57,15 @@ pull while VMs exist" to someone (including future you) at 2 AM.
 - Resource changes (CPU, RAM, disk grow)
 - One-time setup: `qvm init` writes a sample config and (optionally)
   downloads the baseline image set
-- **Interactive TUI** (bare `qvm` with no subcommand) — a k9s-style live
-  dashboard for users who prefer browsing over typing. The CLI remains the
-  source of truth; the TUI is a thin presenter that delegates to the same
-  `commands::*` functions the CLI uses.
-- **Minimal responsive web UI** (`qvm web`) — same shape as the TUI but in
-  a browser, for managing VMs from a phone or another machine on the LAN.
-  Foreground process, no daemon, no auth (operator-launched on demand,
-  defaults to 127.0.0.1). Embedded HTTP server, server-rendered HTML, on-
-  demand websockify+noVNC bridge per VM console.
+- **Interactive TUI** (bare `qvm` with no subcommand) — a Proxmox-style
+  split-pane: persistent sidebar listing VMs, contextual content pane
+  (detail / inline create form / help / empty), and a status bar with
+  contextual hints and inline confirms for destructive actions. The CLI
+  remains the source of truth; the TUI is a thin presenter that delegates
+  to the same `commands::*` functions the CLI uses.
+- **`qvm vnc --browser`** — spawns a `websockify` + noVNC bridge for the
+  one thing browsers genuinely do better than terminals: render the VM's
+  framebuffer.
 - A single static `amd64` binary; no daemon, no extra runtime
 
 ### Explicitly out of scope
@@ -79,11 +79,11 @@ re-reading section 1 and considering whether the tool is sprawling.
   would be acceptable; we won't reinvent it)
 - Storage pools / LVM / Ceph / anything other than qcow2 files in a
   configurable directory
-- Persistent / daemonised web service. `qvm web` runs in the foreground
-  while the operator is using it and exits on Ctrl-C. Anything that needs
-  a background-running web app belongs in Cockpit or a separate tool.
-- Authentication, TLS, multi-user access on the web UI. Trusted-LAN only,
-  defaults to 127.0.0.1, no exceptions.
+- **Web admin UI for VM management.** We tried it (commits 694e16d…acf3603)
+  and the TUI was the better home. The browser is only used for the VM
+  console via `qvm vnc --browser` — see decision-log section 5.
+- Persistent / daemonised processes of any kind. qvm exits when its
+  invoking operation is done.
 - User management or multi-tenant access (single root-owned tool)
 - Image building or Packer-style workflows
 - Container support (this is a VM tool)
@@ -172,14 +172,6 @@ src/tui/
     ├── events.rs      Crossterm key events → Action enum.
     └── forms.rs       Minimal text-input helper (avoids tui-input dep).
 
-src/web/
-    ├── mod.rs         tiny_http server, route dispatch, per-VM websockify
-    │                  session bookkeeping (killed on Ctrl-C via Drop).
-    ├── templates.rs   HTML rendering as Rust string-returning functions.
-    │                  No templating engine; uses include_str! for static.
-    ├── assets.rs      Embeds style.css + app.js via include_str!.
-    ├── style.css      ~5 KB of CSS. Mobile-responsive grid + dark theme.
-    └── app.js         ~30 LOC vanilla JS for 2-sec VM-list refresh.
 ```
 
 ---
@@ -231,32 +223,60 @@ supports it. The only thing it loses you is live migration across CPUs of
 different models — and migration is out of scope (see section 2). For a
 single-host homelab tool this is strictly better than `host-model`.
 
-### Why a web UI exists despite the original "no web UI" rule
+### Why the web management UI was removed (after shipping it)
 
-This was the second reversal of the original "minimal CLI only" stance,
-right after the TUI (see next section). The reasoning is the same in
-spirit but a step further: not every user wants to SSH in to use a
-terminal. From a phone, a tablet, or a coworker's laptop, browsing to
-`http://host:8080` is faster than `ssh host && qvm`.
+I shipped `qvm web` as a full server-rendered management UI: VM list,
+create form, lifecycle actions, inspect page, delete confirm, embedded
+noVNC console (commits 694e16d / acf3603). It worked. Then we tested it
+on `aether` and the user pushed back: the only thing a browser does
+*better* than a terminal is render the VM's framebuffer. For every other
+operation (list, create, start/stop, inspect, delete) the TUI is
+faster, doesn't require a daemon, and doesn't carry HTML/CSS/JS in the
+binary. The web UI was scope creep we walked back from.
 
-The fence we draw is at **operator-launched on demand**. `qvm web` is a
-foreground process you start when you want it and Ctrl-C when you're
-done — exactly like `qvm vnc --browser`. There is no background service,
-no init unit, no systemd. There is also no authentication and no TLS,
-because the design contract is "loopback by default, trusted LAN if you
-override". Add either of those and you're now competing with Cockpit,
-which is a project that already does it well.
+What stayed: `qvm vnc --browser` — a foreground command that spawns
+`websockify` + noVNC and prints a URL. Same UX shape (start on demand,
+Ctrl-C to stop), but only for the one use case the browser actually wins.
 
-The web UI shares all logic with the CLI and TUI via `commands::*`.
-There is no parallel state, no separate API model. If the CLI adds a
-new operation, exposing it in the web UI is a 5-line template change.
+What got deleted: `src/web/` (all of it), `src/commands/web.rs`, the
+`Cmd::Web` clap variant, `tiny_http` and `signal-hook` dependencies,
+the four `qvm web` polish commits' worth of CSS/JS/HTML.
 
-VNC consoles are wired by spawning `websockify` on demand (one process
-per VM, tracked in a session map, killed on shutdown). The iframe loads
-the noVNC bundle that ships with the distro `novnc` package — qvm
-doesn't carry its own copy, to keep the binary small.
+The lesson is in `## 2 In scope` — when in doubt, the terminal is the
+admin surface, the browser is for framebuffers.
 
-### Why a TUI now, after originally swearing it off
+### Why the TUI was redesigned (single-pane + modals → Proxmox split-pane)
+
+The first TUI was a single-pane VM table with modal popups for every
+action (create form, inspect, vnc info, delete confirm). It worked but
+felt basic — "open modal, close modal" rhythm for everything, no
+persistent context, no sense of "this is an admin tool". The user
+asked for something closer to Proxmox VE.
+
+Today's layout:
+
+- **Header (1 line)**: brand · hostname · VM summary
+- **Sidebar (~26 cols)**: VM list with status dots; selected item
+  highlighted; filter input on top when `/` is active; `[+] create`
+  at the bottom of the list
+- **Content pane (rest)**: contextual content
+  - `Detail` — selected VM's status/IP/name + scrollable dominfo
+  - `CreateForm` — inline form (no modal)
+  - `Help` — full-pane keybindings reference
+  - `EmptyState` — friendly "no VMs yet" message
+- **Status bar (2 lines)**: contextual key hints on line 1, refresh
+  ticker + toast on line 2. Delete confirm renders here too (`[y]es /
+  [n]o`) — no modal.
+
+Modes drive both the right pane (`ui::draw_content`) and the keymap
+(`events::map_key`). The result: state, IP, CPU time, etc. update live
+on the 2-second tick without the user reopening anything. No more
+modal popups for inspect, vnc, delete.
+
+The single file that owns terminal state remains `src/tui/mod.rs`.
+Every other file is pure logic / pure render and unit-tests cleanly.
+
+### Why a TUI exists at all
 
 Section 2 used to list "Web UI or TUI" as out of scope. The reversal came
 out of a real diagnostic on the `aether` host: `qvm vnc <name>` was
@@ -396,9 +416,14 @@ A few things that look like missed opportunities but are intentional:
   knobs (bridge, paths, SSH keys, default password hash) that asking
   questions is faster than asking the user to learn the TOML schema.
   Silent mode is still available via `qvm init --yes`.
-- **`qvm` with no subcommand opens the TUI.** This is a deliberate
-  reversal of the original "no TUI" stance — see section 5's "Why a TUI
-  now". The CLI surface is unchanged; the TUI is purely additive.
+- **`qvm` with no subcommand opens the TUI.** Proxmox-style split-pane
+  with sidebar + contextual content + status bar. See section 5's "Why
+  the TUI was redesigned" for the design history.
+- **`qvm web` was tried and removed.** A full server-rendered management
+  UI shipped briefly (commits 694e16d–acf3603) but the TUI was the
+  better home for management. `qvm vnc --browser` covers the only
+  case where a browser actually wins — rendering the VM framebuffer.
+  See section 5's "Why the web management UI was removed".
 
 ---
 

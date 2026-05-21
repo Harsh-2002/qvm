@@ -1,9 +1,9 @@
 //! Application state for the TUI. Pure logic, no terminal I/O.
 //!
-//! All actions that don't need raw-mode suspension (lifecycle, delete,
-//! navigation, mode transitions, filter, sort) are applied here. The actions
-//! that DO need to suspend the TUI (create, console) are handled in `mod.rs`,
-//! which is the only file with terminal-state access.
+//! Layout shift from the v1 single-pane-plus-modals to a Proxmox-style
+//! split pane: persistent sidebar listing all VMs, right pane showing the
+//! selected VM's details (or an inline form / help screen / empty state).
+//! Modals are gone; destructive confirms appear in the bottom status bar.
 
 use crate::config::Config;
 use crate::libvirt;
@@ -15,20 +15,25 @@ use std::time::{Duration, Instant};
 const TICK: Duration = Duration::from_secs(2);
 const TOAST_TTL: Duration = Duration::from_secs(5);
 
+/// What the right-hand content pane is showing right now.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
-    Table,
+    /// Default — selected VM's metadata + dominfo.
+    Detail,
+    /// Inline form to create a new VM (replaces the detail pane).
     CreateForm,
-    DeleteConfirm,
-    Inspect { content: String, scroll: u16 },
-    Vnc     { content: String },
+    /// Bottom-bar confirm for delete (Detail still visible behind it).
+    ConfirmDelete,
+    /// Help screen listing keybindings.
     Help,
+    /// Filter input active in the sidebar (Detail still visible).
     Filter,
+    /// No VMs exist — welcome message + create hint.
+    EmptyState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sort { Name, State, Ip }
-
 impl Sort {
     fn next(self) -> Self {
         match self { Sort::Name => Sort::State, Sort::State => Sort::Ip, Sort::Ip => Sort::Name }
@@ -43,6 +48,8 @@ pub struct VmRow {
     pub name:  String,
     pub state: String,
     pub ip:    Option<String>,
+    /// Cached `virsh dominfo` for the selected VM. Updated on tick.
+    pub dominfo: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +59,8 @@ pub enum Toast { Ok(String), Err(String) }
 pub struct App {
     pub rows: Vec<VmRow>,
     pub selected: usize,
+    /// Scroll offset for the dominfo region of the Detail pane.
+    pub detail_scroll: u16,
     pub mode: Mode,
     pub should_quit: bool,
     pub filter: String,
@@ -60,6 +69,7 @@ pub struct App {
     pub toast: Option<(Toast, Instant)>,
     pub last_refresh: Option<Instant>,
     pub create: CreateForm,
+    pub host_label: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -68,6 +78,7 @@ pub struct CreateForm {
     pub name:        TextInput,
     pub distro_idx:  usize, // index into available distros
     pub distros:     Vec<String>,
+    pub distro_pulled: Vec<bool>,
     pub cpus:        TextInput,
     pub memory_gb:   TextInput,
     pub disk_gb:     TextInput,
@@ -79,7 +90,8 @@ impl App {
         Self {
             rows: Vec::new(),
             selected: 0,
-            mode: Mode::Table,
+            detail_scroll: 0,
+            mode: Mode::EmptyState,
             should_quit: false,
             filter: String::new(),
             filter_input: TextInput::default(),
@@ -87,6 +99,7 @@ impl App {
             toast: None,
             last_refresh: None,
             create: CreateForm::default(),
+            host_label: detect_host_label(),
         }
     }
 
@@ -97,22 +110,50 @@ impl App {
         }
     }
 
-    /// Pull a fresh VM list from libvirt. Best-effort: a libvirt failure
-    /// surfaces as a toast and leaves the previous rows visible.
+    /// Refresh from libvirt. Best-effort: surfaces failures as a toast.
     pub fn refresh(&mut self, _cfg: &Config) {
         self.last_refresh = Some(Instant::now());
-        match libvirt::domains() {
+        let result = libvirt::domains();
+        match result {
             Ok(doms) => {
+                let prev_selected_name = self.selected_name();
                 self.rows = doms.into_iter().map(|d| VmRow {
                     ip: if d.state == "running" { libvirt::ipv4(&d.name) } else { None },
                     name: d.name,
                     state: d.state,
+                    dominfo: None,
                 }).collect();
                 self.apply_sort();
-                // Clamp selection.
+
+                // Restore selection by name if possible.
+                if let Some(prev) = prev_selected_name {
+                    if let Some(i) = self.visible().iter().position(|r| r.name == prev) {
+                        self.selected = i;
+                    }
+                }
                 let visible = self.visible_count();
-                if visible == 0 { self.selected = 0; }
-                else if self.selected >= visible { self.selected = visible - 1; }
+                if visible == 0 {
+                    self.selected = 0;
+                    if !matches!(self.mode, Mode::CreateForm | Mode::Help) {
+                        self.mode = Mode::EmptyState;
+                    }
+                } else {
+                    if self.selected >= visible { self.selected = visible - 1; }
+                    if matches!(self.mode, Mode::EmptyState) {
+                        self.mode = Mode::Detail;
+                    }
+                }
+
+                // Pull dominfo for the selected VM only.
+                if let Some(name) = self.selected_name() {
+                    if let Ok(s) = libvirt::dominfo(&name) {
+                        if let Some(idx) = self.visible_index() {
+                            if let Some(actual) = self.row_index_for_visible(idx) {
+                                self.rows[actual].dominfo = Some(s);
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => self.toast_err(format!("refresh failed: {e}")),
         }
@@ -129,7 +170,6 @@ impl App {
         self.rows.sort_by_key(key);
     }
 
-    /// Rows passing the filter.
     pub fn visible(&self) -> Vec<&VmRow> {
         if self.filter.is_empty() { self.rows.iter().collect() }
         else {
@@ -145,32 +185,40 @@ impl App {
     pub fn selected_name(&self) -> Option<String> {
         self.visible().get(self.selected).map(|r| r.name.clone())
     }
-
+    pub fn selected_row(&self) -> Option<&VmRow> {
+        self.visible().get(self.selected).copied()
+    }
     pub fn selected_state(&self) -> Option<String> {
         self.visible().get(self.selected).map(|r| r.state.clone())
+    }
+    fn visible_index(&self) -> Option<usize> {
+        if self.selected < self.visible_count() { Some(self.selected) } else { None }
+    }
+    fn row_index_for_visible(&self, vis_idx: usize) -> Option<usize> {
+        let name = self.visible().get(vis_idx).map(|r| r.name.clone())?;
+        self.rows.iter().position(|r| r.name == name)
     }
 
     pub fn toast_ok(&mut self, m: String)  { self.toast = Some((Toast::Ok(m),  Instant::now())); }
     pub fn toast_err(&mut self, m: String) { self.toast = Some((Toast::Err(m), Instant::now())); }
-
     pub fn current_toast(&self) -> Option<&Toast> {
         self.toast.as_ref().and_then(|(t, when)|
             if when.elapsed() < TOAST_TTL { Some(t) } else { None })
     }
 
-    /// Apply a pure-state action. Actions that need raw-mode handling
-    /// (Console, SubmitCreate) are dispatched in `tui/mod.rs`.
     pub fn apply(&mut self, action: Action, cfg: &Config) {
         match action {
             Action::Quit          => self.should_quit = true,
-            Action::Down          => self.move_selection(1),
-            Action::Up            => self.move_selection(-1),
+            Action::Down          => { self.move_selection(1); self.detail_scroll = 0; }
+            Action::Up            => { self.move_selection(-1); self.detail_scroll = 0; }
+            Action::ScrollDetailDown => self.detail_scroll = self.detail_scroll.saturating_add(1),
+            Action::ScrollDetailUp   => self.detail_scroll = self.detail_scroll.saturating_sub(1),
             Action::OpenCreate    => self.open_create(cfg),
             Action::OpenDelete    => {
-                if self.selected_name().is_some() { self.mode = Mode::DeleteConfirm; }
+                if self.selected_name().is_some() {
+                    self.mode = Mode::ConfirmDelete;
+                }
             }
-            Action::OpenVnc       => self.open_vnc_popup(cfg),
-            Action::OpenInspect   => self.open_inspect(),
             Action::OpenHelp      => self.mode = Mode::Help,
             Action::OpenFilter    => {
                 self.filter_input = TextInput::with_value(&self.filter);
@@ -181,9 +229,10 @@ impl App {
                 self.apply_sort();
                 self.toast_ok(format!("Sorted by {}", self.sort.label()));
             }
-            Action::CloseModal    => self.mode = Mode::Table,
-            Action::Start         => self.act_lifecycle("start", libvirt::start),
-            Action::Stop          => self.act_lifecycle("stop", libvirt::shutdown),
+            Action::ShowVnc       => self.show_vnc_toast(cfg),
+            Action::CloseToDetail => self.close_to_detail(),
+            Action::Start         => self.act_lifecycle("start",   libvirt::start),
+            Action::Stop          => self.act_lifecycle("stop",    libvirt::shutdown),
             Action::Restart       => self.act_lifecycle("restart", libvirt::reboot),
             Action::ConfirmDelete => self.act_delete(cfg),
             // Create-form interactions.
@@ -204,19 +253,26 @@ impl App {
             Action::FilterRight       => self.filter_input.right(),
             Action::FilterCommit      => {
                 self.filter = self.filter_input.value.clone();
-                self.mode = Mode::Table;
+                self.close_to_detail();
                 self.selected = 0;
             }
-            Action::FilterCancel      => self.mode = Mode::Table,
-            // Inspect popup scrolling.
-            Action::InspectScroll(d)  => self.inspect_scroll(d),
-            // Actions handled in tui/mod.rs — should never reach here.
+            Action::FilterCancel      => {
+                self.filter_input.clear();
+                self.close_to_detail();
+            }
+            // Actions handled in tui/mod.rs (suspend+exec) — should never reach here.
             Action::Console | Action::SubmitCreate | Action::Noop => {}
         }
-        // Toast expiry is handled implicitly by `current_toast` filtering on
-        // age, but we can drop the field once it's stale to save memory.
         if let Some((_, when)) = self.toast {
             if when.elapsed() > TOAST_TTL * 4 { self.toast = None; }
+        }
+    }
+
+    fn close_to_detail(&mut self) {
+        if self.visible_count() == 0 {
+            self.mode = Mode::EmptyState;
+        } else {
+            self.mode = Mode::Detail;
         }
     }
 
@@ -242,16 +298,21 @@ impl App {
             Ok(()) => self.toast_ok(format!("Deleted '{name}'")),
             Err(e) => self.toast_err(format!("delete '{name}' failed: {e}")),
         }
-        self.mode = Mode::Table;
+        self.close_to_detail();
         self.refresh(cfg);
     }
 
     fn open_create(&mut self, cfg: &Config) {
+        let distros: Vec<String> = cfg.distros.keys().cloned().collect();
+        let distro_pulled: Vec<bool> = distros.iter()
+            .map(|k| cfg.image_path(k).map(|p| p.exists()).unwrap_or(false))
+            .collect();
         let mut f = CreateForm {
-            distros: cfg.distros.keys().cloned().collect(),
-            cpus:        TextInput::with_value(cfg.defaults.cpus.to_string()),
-            memory_gb:   TextInput::with_value(cfg.defaults.memory_gb.to_string()),
-            disk_gb:     TextInput::with_value(cfg.defaults.disk_gb.to_string()),
+            distros,
+            distro_pulled,
+            cpus:      TextInput::with_value(cfg.defaults.cpus.to_string()),
+            memory_gb: TextInput::with_value(cfg.defaults.memory_gb.to_string()),
+            disk_gb:   TextInput::with_value(cfg.defaults.disk_gb.to_string()),
             ..Default::default()
         };
         if let Some(idx) = f.distros.iter().position(|d| d == &cfg.defaults.distro) {
@@ -261,7 +322,7 @@ impl App {
         self.mode = Mode::CreateForm;
     }
 
-    fn open_vnc_popup(&mut self, cfg: &Config) {
+    fn show_vnc_toast(&mut self, cfg: &Config) {
         let Some(name) = self.selected_name() else { return };
         if self.selected_state().as_deref() != Some("running") {
             self.toast_err(format!("'{name}' is not running"));
@@ -270,42 +331,19 @@ impl App {
         match libvirt::vnc_endpoint(&name) {
             Some(ep) => {
                 let bind = &cfg.vnc.bind;
-                let content = format!(
-                    "VNC for '{name}'\n\n\
-                     bind     {bind}\n\
-                     display  :{}\n\
-                     port     {}\n\n\
-                     vncviewer {bind}:{}\n\
-                     vncviewer {bind}::{}\n\n\
-                     open vnc://{bind}",
-                    ep.display, ep.port, ep.display, ep.port,
-                );
-                self.mode = Mode::Vnc { content };
+                self.toast_ok(format!(
+                    "VNC: {bind}:{} (port {}) — open vnc://{bind}",
+                    ep.display, ep.port,
+                ));
             }
             None => self.toast_err(format!("'{name}' has no VNC display")),
-        }
-    }
-
-    fn open_inspect(&mut self) {
-        let Some(name) = self.selected_name() else { return };
-        match libvirt::dominfo(&name) {
-            Ok(content) => self.mode = Mode::Inspect { content, scroll: 0 },
-            Err(e)      => self.toast_err(format!("inspect '{name}' failed: {e}")),
-        }
-    }
-
-    fn inspect_scroll(&mut self, delta: i32) {
-        if let Mode::Inspect { scroll, content } = &mut self.mode {
-            let max = content.lines().count() as i32;
-            let new = (*scroll as i32 + delta).clamp(0, (max - 1).max(0));
-            *scroll = new as u16;
         }
     }
 
     fn create_focused_mut<F: FnOnce(&mut TextInput)>(&mut self, f: F) {
         match self.create.field {
             0 => f(&mut self.create.name),
-            // 1 (distro) is not a text field — left/right cycles it via CreateLeft/Right.
+            // 1 (distro) is not a text field — left/right cycles it.
             2 => f(&mut self.create.cpus),
             3 => f(&mut self.create.memory_gb),
             4 => f(&mut self.create.disk_gb),
@@ -316,7 +354,7 @@ impl App {
 
     fn create_insert(&mut self, c: char) {
         match self.create.field {
-            1 => {} // distro field — ignore typing; use ←/→
+            1 => {}
             2..=4 => {
                 if c.is_ascii_digit() { self.create_focused_mut(|f| f.insert(c)); }
             }
@@ -341,8 +379,6 @@ impl App {
         } else { self.create_focused_mut(|f| f.right()); }
     }
 
-    /// Build the `commands::create::Args` from the form, validating fields.
-    /// Returns Err with a user-facing message on validation failure.
     pub fn take_create_args(&mut self) -> std::result::Result<crate::commands::create::Args, String> {
         let name = self.create.name.value.trim().to_string();
         if !util::valid_vm_name(&name) {
@@ -365,7 +401,7 @@ impl App {
             let s = self.create.user.value.trim();
             if s.is_empty() { None } else { Some(s.to_string()) }
         };
-        self.mode = Mode::Table;
+        self.close_to_detail();
         Ok(crate::commands::create::Args {
             name,
             distro: Some(distro),
@@ -380,3 +416,11 @@ impl App {
 }
 
 impl Default for App { fn default() -> Self { Self::new() } }
+
+fn detect_host_label() -> String {
+    crate::cmd::run("hostname", std::iter::empty::<&str>())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "this-host".into())
+}

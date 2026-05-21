@@ -1,31 +1,45 @@
 //! Map crossterm key events → `Action`s. Pure function; no state mutation.
+//!
+//! The right pane's mode (`Detail` vs `CreateForm` vs `Filter` vs
+//! `ConfirmDelete` vs `Help` vs `EmptyState`) decides which key map runs.
+//! Sidebar navigation (↑/↓) and quit (q/Ctrl-C) are global across modes.
 
 use crate::tui::app::{App, Mode};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// Every user-initiated thing the TUI can do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Noop,
     Quit,
 
-    // Table mode.
+    // Sidebar navigation (always available except in text-entry modes).
     Up,
     Down,
+
+    // Detail-pane scrolling.
+    ScrollDetailUp,
+    ScrollDetailDown,
+
+    // Mode transitions.
     OpenCreate,
     OpenDelete,
-    OpenVnc,
-    OpenInspect,
     OpenHelp,
     OpenFilter,
+    CloseToDetail,
+
+    // Sort cycle.
     CycleSort,
+
+    // Lifecycle.
     Start,
     Stop,
     Restart,
-    Console, // handled in tui/mod.rs (suspend-exec)
 
-    // Modal close / generic Esc.
-    CloseModal,
+    // Console (handled in tui/mod.rs — suspend + exec virsh console).
+    Console,
+
+    // VNC info (shown as a toast).
+    ShowVnc,
 
     // Delete confirm.
     ConfirmDelete,
@@ -40,9 +54,10 @@ pub enum Action {
     CreateInsert(char),
     CreateBackspace,
     CreateDelete,
-    SubmitCreate, // handled in tui/mod.rs (suspend-exec)
+    /// Handled in tui/mod.rs (suspend + run create).
+    SubmitCreate,
 
-    // Filter mode.
+    // Filter.
     FilterInsert(char),
     FilterBackspace,
     FilterDelete,
@@ -50,51 +65,58 @@ pub enum Action {
     FilterRight,
     FilterCommit,
     FilterCancel,
-
-    // Inspect popup scroll.
-    InspectScroll(i32),
 }
 
 pub fn map_key(app: &App, k: KeyEvent) -> Action {
-    // Global: Ctrl-C always quits, regardless of mode.
+    // Ctrl-C always quits.
     if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
         return Action::Quit;
     }
-
     match &app.mode {
-        Mode::Table         => table_key(k),
-        Mode::CreateForm    => create_key(k),
-        Mode::DeleteConfirm => confirm_key(k),
-        Mode::Inspect { .. } => inspect_key(k),
-        Mode::Vnc { .. }    => any_to_close(k),
-        Mode::Help          => any_to_close(k),
-        Mode::Filter        => filter_key(k),
+        Mode::Detail        => key_in_detail(k),
+        Mode::EmptyState    => key_in_empty(k),
+        Mode::CreateForm    => key_in_create(k),
+        Mode::ConfirmDelete => key_in_confirm(k),
+        Mode::Help          => key_in_help(k),
+        Mode::Filter        => key_in_filter(k),
     }
 }
 
-fn table_key(k: KeyEvent) -> Action {
+/// Default — VM list focus, no text entry. All the main hotkeys live here.
+fn key_in_detail(k: KeyEvent) -> Action {
     match k.code {
         KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
         KeyCode::Char('j') | KeyCode::Down => Action::Down,
         KeyCode::Char('k') | KeyCode::Up   => Action::Up,
+        KeyCode::PageDown                  => Action::ScrollDetailDown,
+        KeyCode::PageUp                    => Action::ScrollDetailUp,
         KeyCode::Char('c') => Action::OpenCreate,
         KeyCode::Char('d') => Action::OpenDelete,
-        KeyCode::Char('v') => Action::OpenVnc,
+        KeyCode::Char('v') => Action::ShowVnc,
         KeyCode::Char('e') => Action::Console,
-        KeyCode::Char('i') => Action::OpenInspect,
-        KeyCode::Char('?') => Action::OpenHelp,
-        KeyCode::Char('/') => Action::OpenFilter,
-        KeyCode::Char('o') => Action::CycleSort,
         KeyCode::Char('s') => Action::Start,
         KeyCode::Char('t') => Action::Stop,
         KeyCode::Char('r') => Action::Restart,
+        KeyCode::Char('/') => Action::OpenFilter,
+        KeyCode::Char('o') => Action::CycleSort,
+        KeyCode::Char('?') => Action::OpenHelp,
         _ => Action::Noop,
     }
 }
 
-fn create_key(k: KeyEvent) -> Action {
+/// Empty state: only useful keys are create / help / quit.
+fn key_in_empty(k: KeyEvent) -> Action {
     match k.code {
-        KeyCode::Esc       => Action::CloseModal,
+        KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+        KeyCode::Char('c') => Action::OpenCreate,
+        KeyCode::Char('?') => Action::OpenHelp,
+        _ => Action::Noop,
+    }
+}
+
+fn key_in_create(k: KeyEvent) -> Action {
+    match k.code {
+        KeyCode::Esc       => Action::CloseToDetail,
         KeyCode::Enter     => Action::SubmitCreate,
         KeyCode::Tab       => Action::CreateNext,
         KeyCode::BackTab   => Action::CreatePrev,
@@ -109,32 +131,22 @@ fn create_key(k: KeyEvent) -> Action {
     }
 }
 
-fn confirm_key(k: KeyEvent) -> Action {
+fn key_in_confirm(k: KeyEvent) -> Action {
     match k.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => Action::ConfirmDelete,
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::CloseModal,
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::CloseToDetail,
         _ => Action::Noop,
     }
 }
 
-fn inspect_key(k: KeyEvent) -> Action {
+fn key_in_help(k: KeyEvent) -> Action {
     match k.code {
-        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => Action::CloseModal,
-        KeyCode::Up        => Action::InspectScroll(-1),
-        KeyCode::Down      => Action::InspectScroll(1),
-        KeyCode::PageUp    => Action::InspectScroll(-10),
-        KeyCode::PageDown  => Action::InspectScroll(10),
-        KeyCode::Home      => Action::InspectScroll(i32::MIN),
-        KeyCode::End       => Action::InspectScroll(i32::MAX),
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Enter => Action::CloseToDetail,
         _ => Action::Noop,
     }
 }
 
-fn any_to_close(k: KeyEvent) -> Action {
-    match k.code { KeyCode::Char(_) | KeyCode::Esc | KeyCode::Enter => Action::CloseModal, _ => Action::Noop }
-}
-
-fn filter_key(k: KeyEvent) -> Action {
+fn key_in_filter(k: KeyEvent) -> Action {
     match k.code {
         KeyCode::Esc       => Action::FilterCancel,
         KeyCode::Enter     => Action::FilterCommit,
@@ -142,6 +154,10 @@ fn filter_key(k: KeyEvent) -> Action {
         KeyCode::Right     => Action::FilterRight,
         KeyCode::Backspace => Action::FilterBackspace,
         KeyCode::Delete    => Action::FilterDelete,
+        // While typing in filter, ↑/↓ still navigate the list (matches the
+        // user's expectation when they're refining a search).
+        KeyCode::Down      => Action::Down,
+        KeyCode::Up        => Action::Up,
         KeyCode::Char(c)   => Action::FilterInsert(c),
         _ => Action::Noop,
     }
