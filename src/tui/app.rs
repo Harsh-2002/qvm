@@ -32,6 +32,8 @@ pub enum Mode {
     Detail,
     /// Inline form to create a new VM (replaces the detail pane).
     CreateForm,
+    /// Inline form to change CPU / RAM / disk on the selected VM.
+    ResizeForm,
     /// Bottom-bar confirm for delete (Detail still visible behind it).
     ConfirmDelete,
     /// Help screen listing keybindings.
@@ -96,6 +98,30 @@ pub struct App {
     /// once at TUI startup. Non-zero values render a hint in the header
     /// pointing at `qvm cleanup`.
     pub orphan_count: usize,
+    /// Inline resize form for the selected VM. Populated when the user
+    /// presses [m]; consumed when they Enter to apply.
+    pub resize: ResizeForm,
+}
+
+/// Inline resize form. Pre-populated with the selected VM's current
+/// CPU / RAM / disk; the user changes any of the three.
+///
+/// CPU + RAM apply on next reboot (libvirt's --config flag — virtio
+/// memory ballooning could shrink/grow live but qvm doesn't expose
+/// that knob). Disk grow requires the VM to be stopped (qemu-img can
+/// corrupt a live qcow2). Disk shrink is intentionally not supported
+/// — it requires in-guest filesystem cooperation.
+#[derive(Debug, Clone, Default)]
+pub struct ResizeForm {
+    pub field:     usize, // 0..=2
+    pub vm_name:   String,
+    pub cpus:      TextInput,
+    pub memory_gb: TextInput,
+    pub disk_gb:   TextInput,
+    /// Originals for "did the user change this?" comparison.
+    pub orig_cpus:      u32,
+    pub orig_memory_gb: u32,
+    pub orig_disk_gb:   u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -137,6 +163,7 @@ impl App {
             is_refreshing: false,
             pending: None,
             orphan_count: 0,
+            resize: ResizeForm::default(),
         }
     }
 
@@ -212,7 +239,7 @@ impl App {
         let visible = self.visible_count();
         if visible == 0 {
             self.selected = 0;
-            if !matches!(self.mode, Mode::CreateForm | Mode::Help) {
+            if !matches!(self.mode, Mode::CreateForm | Mode::ResizeForm | Mode::Help) {
                 self.mode = Mode::EmptyState;
             }
         } else {
@@ -292,6 +319,9 @@ impl App {
             Action::ScrollDetailDown => self.detail_scroll = self.detail_scroll.saturating_add(1),
             Action::ScrollDetailUp   => self.detail_scroll = self.detail_scroll.saturating_sub(1),
             Action::OpenCreate    => self.open_create(cfg),
+            Action::OpenResize    => {
+                if self.selected_name().is_some() { self.open_resize(cfg); }
+            }
             Action::OpenDelete    => {
                 if self.selected_name().is_some() {
                     self.mode = Mode::ConfirmDelete;
@@ -323,6 +353,16 @@ impl App {
             Action::CreateRight  => self.create_arrow_right(),
             Action::CreateHome   => self.create_focused_mut(|f| f.home()),
             Action::CreateEnd    => self.create_focused_mut(|f| f.end()),
+            // Resize-form interactions.
+            Action::ResizeNext      => self.resize_next_field(),
+            Action::ResizePrev      => self.resize_prev_field(),
+            Action::ResizeInsert(c) => self.resize_insert(c),
+            Action::ResizeBackspace => self.resize_backspace(),
+            Action::ResizeDelete    => self.resize_delete(),
+            Action::ResizeLeft      => self.resize_left(),
+            Action::ResizeRight     => self.resize_right(),
+            Action::ResizeHome      => self.resize_home(),
+            Action::ResizeEnd       => self.resize_end(),
             // Filter interactions.
             Action::FilterInsert(c)   => self.filter_input.insert(c),
             Action::FilterBackspace   => self.filter_input.backspace(),
@@ -339,7 +379,9 @@ impl App {
                 self.close_to_detail();
             }
             // Actions handled in tui/mod.rs (suspend+exec) — should never reach here.
-            Action::Console | Action::Browser | Action::SubmitCreate | Action::Noop => {}
+            Action::Console | Action::Browser
+                | Action::SubmitCreate | Action::SubmitResize
+                | Action::Noop => {}
         }
         if let Some((_, when)) = self.toast {
             if when.elapsed() > TOAST_TTL * 4 { self.toast = None; }
@@ -475,6 +517,88 @@ impl App {
         } else { self.create_focused_mut(|f| f.right()); }
     }
 
+    /// Open the inline resize form for the selected VM. Best-effort:
+    /// pre-fills from `virsh dominfo` + `qemu-img info`. Falls back to
+    /// blank fields if either lookup fails (the user can still type).
+    fn open_resize(&mut self, cfg: &Config) {
+        let name = match self.selected_name() { Some(n) => n, None => return };
+        let (cpus_now, mem_now) = current_cpus_mem(&name).unwrap_or((0, 0));
+        let disk_now = current_disk_gb(cfg, &name).unwrap_or(0);
+        self.resize = ResizeForm {
+            field:     0,
+            vm_name:   name,
+            cpus:      TextInput::with_value(cpus_now.to_string()),
+            memory_gb: TextInput::with_value(mem_now.to_string()),
+            disk_gb:   TextInput::with_value(disk_now.to_string()),
+            orig_cpus:      cpus_now,
+            orig_memory_gb: mem_now,
+            orig_disk_gb:   disk_now,
+        };
+        self.mode = Mode::ResizeForm;
+    }
+
+    fn resize_focused_mut<F>(&mut self, f: F) where F: FnOnce(&mut TextInput) {
+        let r = &mut self.resize;
+        match r.field {
+            0 => f(&mut r.cpus),
+            1 => f(&mut r.memory_gb),
+            2 => f(&mut r.disk_gb),
+            _ => {}
+        }
+    }
+
+    pub fn resize_next_field(&mut self) { self.resize.field = (self.resize.field + 1) % 3; }
+    pub fn resize_prev_field(&mut self) { self.resize.field = (self.resize.field + 2) % 3; }
+
+    pub fn resize_insert(&mut self, c: char) {
+        // Only digits — these are integer GB / count fields.
+        if c.is_ascii_digit() {
+            self.resize_focused_mut(|t| t.insert(c));
+        }
+    }
+    pub fn resize_backspace(&mut self) { self.resize_focused_mut(|t| t.backspace()); }
+    pub fn resize_delete(&mut self)    { self.resize_focused_mut(|t| t.delete()); }
+    pub fn resize_left(&mut self)      { self.resize_focused_mut(|t| t.left()); }
+    pub fn resize_right(&mut self)     { self.resize_focused_mut(|t| t.right()); }
+    pub fn resize_home(&mut self)      { self.resize_focused_mut(|t| t.home()); }
+    pub fn resize_end(&mut self)       { self.resize_focused_mut(|t| t.end()); }
+
+    /// Pull out the resize plan: parsed CPUs / RAM / disk + the original
+    /// values so the executor knows what actually changed. Closes the
+    /// form on success.
+    pub fn take_resize_args(&mut self) -> std::result::Result<ResizeArgs, String> {
+        let parse_pos = |t: &TextInput, what: &str| -> std::result::Result<u32, String> {
+            let s = t.value.trim();
+            if s.is_empty() { return Err(format!("{what} required")); }
+            let n: u32 = s.parse().map_err(|_| format!("{what} must be a number"))?;
+            if n == 0 { return Err(format!("{what} must be > 0")); }
+            Ok(n)
+        };
+        let cpus    = parse_pos(&self.resize.cpus, "CPUs")?;
+        let mem_gb  = parse_pos(&self.resize.memory_gb, "RAM (GB)")?;
+        let disk_gb = parse_pos(&self.resize.disk_gb, "Disk (GB)")?;
+        // Disk shrink is refused — we don't have a safe path for it.
+        if disk_gb < self.resize.orig_disk_gb {
+            return Err(format!(
+                "disk shrink ({} → {} GB) is not supported. Manual route: \
+                 shrink the FS inside the guest, then `qemu-img resize --shrink`.",
+                self.resize.orig_disk_gb, disk_gb
+            ));
+        }
+        let name = self.resize.vm_name.clone();
+        let plan = ResizeArgs {
+            name,
+            cpus,
+            memory_gb: mem_gb,
+            disk_gb,
+            orig_cpus:      self.resize.orig_cpus,
+            orig_memory_gb: self.resize.orig_memory_gb,
+            orig_disk_gb:   self.resize.orig_disk_gb,
+        };
+        self.close_to_detail();
+        Ok(plan)
+    }
+
     pub fn take_create_args(&mut self) -> std::result::Result<crate::commands::create::Args, String> {
         let name = self.create.name.value.trim().to_string();
         if !util::valid_vm_name(&name) {
@@ -524,6 +648,65 @@ impl App {
 }
 
 impl Default for App { fn default() -> Self { Self::new() } }
+
+/// What the resize executor needs to apply the plan. Lives outside App
+/// so the tui/mod.rs handler can take ownership while the App is
+/// already in Mode::Detail.
+#[derive(Debug, Clone)]
+pub struct ResizeArgs {
+    pub name: String,
+    pub cpus: u32,
+    pub memory_gb: u32,
+    pub disk_gb: u32,
+    pub orig_cpus: u32,
+    pub orig_memory_gb: u32,
+    pub orig_disk_gb: u32,
+}
+
+/// Parse libvirt `virsh dominfo <name>` for (CPUs, memory_gb).
+fn current_cpus_mem(name: &str) -> Option<(u32, u32)> {
+    let raw = crate::libvirt::dominfo(name).ok()?;
+    let mut cpus = None;
+    let mut mem_gb = None;
+    for line in raw.lines() {
+        let t = line.trim();
+        if let Some(v) = t.strip_prefix("CPU(s):") {
+            cpus = v.trim().parse().ok();
+        } else if let Some(rest) = t.strip_prefix("Max memory:") {
+            let kib: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            mem_gb = Some(kib.div_ceil(1024 * 1024) as u32);
+        }
+    }
+    Some((cpus?, mem_gb?))
+}
+
+/// Inspect the on-disk qcow2 for its virtual size (GB, rounded up).
+fn current_disk_gb(cfg: &Config, name: &str) -> Option<u32> {
+    let disk = cfg.vm_disk(name);
+    let out = crate::cmd::run("qemu-img", [
+        "info", "--output=human", disk.to_string_lossy().as_ref(),
+    ]).ok()?;
+    for line in out.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("virtual size:") {
+            // "virtual size: 50 GiB (...)" — take the GiB count, round up.
+            if let Some(gib_idx) = rest.find(" GiB") {
+                let n_str: String = rest[..gib_idx].chars()
+                    .filter(|c| c.is_ascii_digit() || *c == '.').collect();
+                if let Ok(n) = n_str.trim().parse::<f64>() {
+                    return Some(n.ceil() as u32);
+                }
+            }
+            // Fallback: "N bytes (...)" form.
+            let n_str: String = rest.split_whitespace().next()?.chars()
+                .filter(|c| c.is_ascii_digit()).collect();
+            if let Ok(bytes) = n_str.parse::<u64>() {
+                return Some(bytes.div_ceil(1024u64.pow(3)) as u32);
+            }
+        }
+    }
+    None
+}
 
 fn detect_host_label() -> String {
     crate::cmd::run("hostname", std::iter::empty::<&str>())

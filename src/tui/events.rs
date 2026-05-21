@@ -26,6 +26,7 @@ pub enum Action {
 
     // Mode transitions.
     OpenCreate,
+    OpenResize,
     OpenDelete,
     OpenHelp,
     OpenFilter,
@@ -63,6 +64,19 @@ pub enum Action {
     /// Handled in tui/mod.rs (suspend + run create).
     SubmitCreate,
 
+    // Resize form.
+    ResizeNext,
+    ResizePrev,
+    ResizeLeft,
+    ResizeRight,
+    ResizeHome,
+    ResizeEnd,
+    ResizeInsert(char),
+    ResizeBackspace,
+    ResizeDelete,
+    /// Handled in tui/mod.rs (suspend if disk grow, else inline).
+    SubmitResize,
+
     // Filter.
     FilterInsert(char),
     FilterBackspace,
@@ -82,6 +96,7 @@ pub fn map_key(app: &App, k: KeyEvent) -> Action {
         Mode::Detail        => key_in_detail(k),
         Mode::EmptyState    => key_in_empty(k),
         Mode::CreateForm    => key_in_create(k),
+        Mode::ResizeForm    => key_in_resize(k),
         Mode::ConfirmDelete => key_in_confirm(k),
         Mode::Help          => key_in_help(k),
         Mode::Filter        => key_in_filter(k),
@@ -98,6 +113,7 @@ fn key_in_detail(k: KeyEvent) -> Action {
         KeyCode::PageDown                  => Action::ScrollDetailDown,
         KeyCode::PageUp                    => Action::ScrollDetailUp,
         KeyCode::Char('c') => Action::OpenCreate,
+        KeyCode::Char('m') => Action::OpenResize,
         KeyCode::Char('d') => Action::OpenDelete,
         KeyCode::Char('v') => Action::ShowVnc,
         KeyCode::Char('e') => Action::Console,
@@ -137,6 +153,23 @@ fn key_in_create(k: KeyEvent) -> Action {
         KeyCode::Backspace => Action::CreateBackspace,
         KeyCode::Delete    => Action::CreateDelete,
         KeyCode::Char(c)   => Action::CreateInsert(c),
+        _ => Action::Noop,
+    }
+}
+
+fn key_in_resize(k: KeyEvent) -> Action {
+    match k.code {
+        KeyCode::Esc       => Action::CloseToDetail,
+        KeyCode::Enter     => Action::SubmitResize,
+        KeyCode::Tab       => Action::ResizeNext,
+        KeyCode::BackTab   => Action::ResizePrev,
+        KeyCode::Left      => Action::ResizeLeft,
+        KeyCode::Right     => Action::ResizeRight,
+        KeyCode::Home      => Action::ResizeHome,
+        KeyCode::End       => Action::ResizeEnd,
+        KeyCode::Backspace => Action::ResizeBackspace,
+        KeyCode::Delete    => Action::ResizeDelete,
+        KeyCode::Char(c)   => Action::ResizeInsert(c),
         _ => Action::Noop,
     }
 }

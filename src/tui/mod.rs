@@ -177,6 +177,21 @@ fn handle_action(
             }
             app.refresh(cfg);
         }
+        Action::SubmitResize => {
+            let plan = match app.take_resize_args() {
+                Ok(p) => p,
+                Err(msg) => {
+                    app.toast_err(msg);
+                    return Ok(());
+                }
+            };
+            let res = apply_resize(cfg, terminal, &plan);
+            match res {
+                Ok(summary) => app.toast_ok(format!("Resized '{}': {summary}", plan.name)),
+                Err(e)      => app.toast_err(format!("resize '{}' failed: {e}", plan.name)),
+            }
+            app.refresh(cfg);
+        }
         other => {
             // Pure state mutations: delete confirm, start/stop/restart, mode
             // changes, navigation, filter, sort, help, etc.
@@ -203,6 +218,49 @@ where
     let _ = execute!(stdout(), EnterAlternateScreen, Hide);
     let _ = terminal.clear();
     r
+}
+
+/// Execute the resize plan from the inline form.
+///
+/// CPU + RAM changes are inline (set_cpu / set_ram both apply via `virsh
+/// setvcpus --config`, take effect on next reboot — no shutdown needed).
+/// Disk grow requires the VM to be stopped; `resources::resize_disk`
+/// handles the stop/wait/grow flow itself but it also prompts on stdin,
+/// so we suspend ratatui around the disk path.
+fn apply_resize(
+    cfg: &Config,
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    plan: &app::ResizeArgs,
+) -> crate::error::Result<String> {
+    let mut applied: Vec<String> = Vec::new();
+
+    if plan.cpus != plan.orig_cpus {
+        crate::commands::resources::set_cpu(&plan.name, plan.cpus)?;
+        applied.push(format!("CPU {}→{}", plan.orig_cpus, plan.cpus));
+    }
+    if plan.memory_gb != plan.orig_memory_gb {
+        crate::commands::resources::set_ram(&plan.name, plan.memory_gb)?;
+        applied.push(format!("RAM {}→{}G", plan.orig_memory_gb, plan.memory_gb));
+    }
+    if plan.disk_gb != plan.orig_disk_gb {
+        // resize_disk shuts the VM down via a prompt on stdin — needs raw
+        // mode off and the alt screen released. Restart the VM only if
+        // resize_disk implicitly stopped it (which it does on demand);
+        // the user can press 's' afterwards if they want it started.
+        let name = plan.name.clone();
+        let new = plan.disk_gb;
+        let res = suspend(terminal, || {
+            crate::commands::resources::resize_disk(cfg, &name, &format!("{new}G"))
+        });
+        res?;
+        applied.push(format!("disk {}→{}G", plan.orig_disk_gb, plan.disk_gb));
+    }
+
+    if applied.is_empty() {
+        Ok("nothing to change".into())
+    } else {
+        Ok(applied.join(", "))
+    }
 }
 
 fn io_err(e: std::io::Error) -> crate::error::Error {

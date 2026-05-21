@@ -72,6 +72,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match &app.mode {
         Mode::Filter => place_filter_cursor(f, app, layout[1], &theme),
         Mode::CreateForm => place_create_cursor(f, app, layout[1]),
+        Mode::ResizeForm => place_resize_cursor(f, app, layout[1]),
         _ => {}
     }
 }
@@ -221,6 +222,7 @@ fn draw_content(f: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focused == FocusPane::Detail;
     let title = match &app.mode {
         Mode::CreateForm => "  CREATE VM  ".to_string(),
+        Mode::ResizeForm => format!("  RESIZE {}  ", app.resize.vm_name),
         Mode::Help       => "  HELP  ".to_string(),
         Mode::EmptyState => "".to_string(),
         _                => app.selected_name()
@@ -240,6 +242,7 @@ fn draw_content(f: &mut Frame, area: Rect, app: &mut App) {
     match &app.mode {
         Mode::Detail | Mode::ConfirmDelete | Mode::Filter => draw_detail(f, inner, app),
         Mode::CreateForm => draw_create(f, inner, app),
+        Mode::ResizeForm => draw_resize(f, inner, app),
         Mode::Help       => draw_help(f, inner, t),
         Mode::EmptyState => draw_empty(f, inner, t),
     }
@@ -413,6 +416,58 @@ fn draw_create(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+fn draw_resize(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    let inner = area.inner(Margin { horizontal: 2, vertical: 1 });
+    let r = &app.resize;
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Tab/Shift-Tab", t.accent()),
+            Span::styled(" move · ", t.faint()),
+            Span::styled("Enter", t.accent()),
+            Span::styled(" apply · ", t.faint()),
+            Span::styled("Esc", t.accent()),
+            Span::styled(" cancel", t.faint()),
+        ])),
+        Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+    );
+
+    // CPU + RAM apply on next reboot; disk requires a stop. Spell it out
+    // so the user doesn't expect live changes.
+    let note = Line::from(vec![
+        Span::styled("CPU/RAM apply on next reboot · disk grow stops + restarts the VM · disk shrink is not supported.",
+            t.faint()),
+    ]);
+    f.render_widget(Paragraph::new(note).wrap(Wrap { trim: true }),
+        Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 2 });
+
+    let labels = ["CPUs", "RAM (GB)", "Disk (GB)"];
+    let originals = [r.orig_cpus, r.orig_memory_gb, r.orig_disk_gb];
+    let inputs    = [&r.cpus,      &r.memory_gb,    &r.disk_gb];
+    for (i, label) in labels.iter().enumerate() {
+        let focused = i == r.field;
+        let bullet = if focused { "▸ " } else { "  " };
+        let label_pad = format!("{:<11}", label);
+        let value = inputs[i].value.clone();
+        let label_style = if focused { t.accent() } else { t.dim() };
+        let delta = match value.trim().parse::<u32>() {
+            Ok(n) if n == originals[i] => String::new(),
+            Ok(n) if n  > originals[i] => format!("  (+{}, was {})", n - originals[i], originals[i]),
+            Ok(n)                      => format!("  (-{}, was {})", originals[i] - n, originals[i]),
+            Err(_)                     => format!("  (was {})", originals[i]),
+        };
+        let line = Line::from(vec![
+            Span::styled(bullet, label_style),
+            Span::styled(label_pad, label_style),
+            Span::styled(value, t.text()),
+            Span::styled(delta, t.faint()),
+        ]);
+        f.render_widget(Paragraph::new(line),
+            Rect { x: inner.x, y: inner.y + 4 + i as u16, width: inner.width, height: 1 });
+    }
+}
+
 fn field_value(c: &CreateForm, i: usize) -> String {
     match i {
         0 => c.name.value.clone(),
@@ -466,6 +521,21 @@ fn place_create_cursor(f: &mut Frame, app: &App, body: Rect) {
     // + margin (2 cols) = body.x + 31. Then 2 (bullet) + 11 (label) = +13.
     let cx = body.x + 28 + 1 + 2 + 2 + 11 + off as u16;
     let cy = body.y + 1 + 1 + 2 + c.field as u16; // border(1) + margin(1) + header(2) + field
+    f.set_cursor_position((cx, cy));
+}
+
+fn place_resize_cursor(f: &mut Frame, app: &App, body: Rect) {
+    let r = &app.resize;
+    let off = match r.field {
+        0 => r.cpus.cursor,
+        1 => r.memory_gb.cursor,
+        2 => r.disk_gb.cursor,
+        _ => return,
+    };
+    // Same column math as the create form (sidebar + border + margin + bullet + label).
+    let cx = body.x + 28 + 1 + 2 + 2 + 11 + off as u16;
+    // Header(1) + note(2 lines) + blank row in draw_resize sums to offset 4.
+    let cy = body.y + 1 + 1 + 4 + r.field as u16;
     f.set_cursor_position((cx, cy));
 }
 
@@ -617,6 +687,12 @@ fn build_actions(app: &App) -> Vec<(&'static str, &'static str, bool)> {
             ("Enter", "Create", true),
             ("Esc",   "Cancel", true),
         ]
+    } else if matches!(app.mode, Mode::ResizeForm) {
+        vec![
+            ("Tab",   "Move",  true),
+            ("Enter", "Apply", true),
+            ("Esc",   "Cancel", true),
+        ]
     } else if matches!(app.mode, Mode::ConfirmDelete) {
         vec![
             ("y",   "Confirm Delete", true),
@@ -633,6 +709,7 @@ fn build_actions(app: &App) -> Vec<(&'static str, &'static str, bool)> {
             ("b", "Browser",  has_selection && !in_transition),
             ("d", "Delete",   has_selection),
             ("c", "Create",   true),
+            ("m", "Modify",   has_selection),
             ("v", "VNC info", has_selection &&  running),
             ("/", "Filter",   true),
             ("o", "Sort",     true),
