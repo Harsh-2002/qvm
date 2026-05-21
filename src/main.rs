@@ -30,6 +30,9 @@ enum Cmd {
         /// After setup, download all baseline images.
         #[arg(long)]
         pull_all: bool,
+        /// Non-interactive: skip the wizard and write defaults immediately.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Create and start a VM.
@@ -132,7 +135,7 @@ fn main() -> ExitCode {
 fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
     // Commands that don't need a config file.
     match &cli.cmd {
-        Cmd::Init { pull_all } => return commands::init::run(cfg_path, *pull_all),
+        Cmd::Init { pull_all, yes } => return commands::init::run(cfg_path, *pull_all, *yes),
         Cmd::Doctor { install } => return commands::doctor::run_doctor(*install),
         Cmd::Completions { shell } => return commands::completions::run::<Cli>(*shell),
         _ => {}
@@ -142,7 +145,7 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
     cfg.ensure_dirs()?;
 
     match &cli.cmd {
-        Cmd::Init { .. } | Cmd::Doctor { .. } | Cmd::Completions { .. } => unreachable!(),
+        Cmd::Init { .. } | Cmd::Doctor { .. } | Cmd::Completions { .. } => unreachable!("handled above"),
 
         Cmd::Create { name, distro, cpus, memory_gb, disk_gb, user, password, no_autostart } => {
             commands::create::run(&cfg, commands::create::Args {

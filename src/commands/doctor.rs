@@ -211,6 +211,7 @@ pub fn run_doctor(install: bool) -> Result<()> {
     if missing.is_empty() {
         println!();
         println!("All required dependencies are installed.");
+        print_examples();
         return Ok(());
     }
 
@@ -280,4 +281,41 @@ pub fn run_doctor(install: bool) -> Result<()> {
     println!();
     println!("Re-running checks...");
     run_doctor(false)
+}
+
+fn print_examples() {
+    println!();
+    println!("Quick-start examples:");
+    println!();
+    println!("  # First-run setup (interactive wizard)");
+    println!("  qvm init");
+    println!();
+    println!("  # First-run setup, non-interactive, download all base images");
+    println!("  qvm init --yes --pull-all");
+    println!();
+    println!("  # Create a VM (uses config defaults for CPU/RAM/disk)");
+    println!("  qvm run web01 debian:13");
+    println!();
+    println!("  # Create with explicit resources and a known username");
+    println!("  qvm run db01 ubuntu:24.04 -c 4 -m 8 -s 100 -u admin");
+    println!();
+    println!("  # List all VMs");
+    println!("  qvm ls");
+    println!();
+    println!("  # Get IP and SSH in");
+    println!("  qvm ip web01");
+    println!("  qvm ssh-cmd web01");
+    println!();
+    println!("  # Stop / start / delete");
+    println!("  qvm stop web01");
+    println!("  qvm start web01");
+    println!("  qvm rm web01");
+    println!();
+    println!("  # Grow a disk");
+    println!("  qvm resize-disk web01 +50G");
+    println!();
+    println!("  # VNC access (tunnel via SSH)");
+    println!("  qvm vnc web01");
+    println!("  # then on your laptop:");
+    println!("  ssh -L 5901:127.0.0.1:5901 root@your-host");
 }
