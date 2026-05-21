@@ -43,7 +43,8 @@ pub fn run(config_path: &Path, pull_all: bool, yes: bool) -> Result<()> {
 /// Download every base image in `cfg.distros` that isn't already present.
 /// Returns an error if ANY download fails (lists which distros failed).
 fn pull_all_images(cfg: &Config) -> Result<()> {
-    crate::cmd::require("wget")?;
+    // No external download tool required — pull::pull_one uses the
+    // embedded HTTPS client.
     println!();
     println!("Downloading baseline images ({} distros)...", cfg.distros.len());
 

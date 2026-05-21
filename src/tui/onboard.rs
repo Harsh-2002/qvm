@@ -376,7 +376,8 @@ fn handle_key(
             KeyCode::Char(' ') => { app.skip_first_pull = !app.skip_first_pull; }
             KeyCode::Enter => {
                 if !app.skip_first_pull {
-                    // Spawn pull via suspend so wget shows live progress.
+                    // Suspend ratatui so the streaming download's progress
+                    // bar (from pull::pull_one) renders cleanly.
                     let distro = app.distro_choices[app.distro_sel].clone();
                     let cfg = build_partial_cfg(app);
                     let result = suspend(terminal, || {

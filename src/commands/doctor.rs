@@ -71,16 +71,6 @@ pub const DEPS: &[Dep] = &[
             pacman: "cdrkit",
         },
     },
-    Dep {
-        binary: "wget",
-        why: "download distro base images (atomic, with progress)",
-        packages: Packages {
-            apt:    "wget",
-            dnf:    "wget",
-            apk:    "wget",
-            pacman: "wget",
-        },
-    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,36 +254,11 @@ pub fn run_doctor(install: bool, assume_yes: bool) -> Result<()> {
 }
 
 fn print_examples() {
+    use crate::style as s;
     println!();
-    println!("Quick-start examples:");
-    println!();
-    println!("  # First-run setup (interactive wizard)");
-    println!("  qvm init");
-    println!();
-    println!("  # First-run setup, non-interactive, download all base images");
-    println!("  qvm init --yes --pull-all");
-    println!();
-    println!("  # Create a VM (uses config defaults for CPU/RAM/disk)");
-    println!("  qvm run web01 debian:13");
-    println!();
-    println!("  # Create with explicit resources and a known username");
-    println!("  qvm run db01 ubuntu:24.04 -c 4 -m 8 -s 100 -u admin");
-    println!();
-    println!("  # List, IP, SSH");
-    println!("  qvm ls");
-    println!("  qvm ip web01");
-    println!("  qvm ssh-cmd web01");
-    println!();
-    println!("  # Stop / start / delete");
-    println!("  qvm stop web01");
-    println!("  qvm start web01");
-    println!("  qvm rm web01");
-    println!();
-    println!("  # Grow a disk");
-    println!("  qvm resize-disk web01 +50G");
-    println!();
-    println!("  # VNC access (tunnel via SSH)");
-    println!("  qvm vnc web01");
-    println!("  # then on your laptop:");
-    println!("  ssh -L 5901:127.0.0.1:5901 root@your-host");
+    println!("{}", s::label("Next:"));
+    println!("  {}    {}", s::cmd("qvm"),                 s::dim("# opens the TUI"));
+    println!("  {} <vm> <distro> -u <user> -p <pw>   {}", s::cmd("qvm run"), s::dim("# create a VM"));
+    println!("  {} <vm> --browser                    {}", s::cmd("qvm vnc"), s::dim("# console in a browser"));
+    println!("  {}                                  {}",  s::cmd("qvm --help"), s::dim("# every command"));
 }

@@ -15,8 +15,9 @@ curl -fsSL https://raw.githubusercontent.com/Harsh-2002/qvm/main/install.sh | su
 
 Installs the latest static binary to `/usr/local/bin/qvm`, brings in
 required host packages (`virsh`, `virt-install`, `qemu-img`,
-`genisoimage`, `wget`) via your package manager, and sets up shell
-completions.
+`genisoimage`) via your package manager, and sets up shell
+completions. HTTPS image downloads are handled by the binary itself —
+no `wget` / `curl` required at runtime.
 
 ## Use
 

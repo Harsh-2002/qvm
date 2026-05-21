@@ -433,8 +433,8 @@ Two commands exist purely to make the host setup experience humane:
 
 ### `qvm doctor` / `qvm doctor --install`
 
-Checks all 6 external binaries qvm depends on (virsh, virt-install,
-qemu-img, qemu-system-x86_64, genisoimage, wget) and verifies libvirtd is
+Checks the 5 external binaries qvm depends on (virsh, virt-install,
+qemu-img, qemu-system-x86_64, genisoimage) and verifies libvirtd is
 reachable. If anything is missing:
 
 - Without `--install`: prints the exact install command for the host
