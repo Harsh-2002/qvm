@@ -57,6 +57,10 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     }
 
     let d = cfg.distro(&distro)?;
+    // Create the qvm dirs FIRST — auto-pull writes to <images>/X.partial
+    // and would otherwise fail when migrating from a deleted dir layout.
+    cfg.ensure_dirs()?;
+
     let base = cfg.image_path(&distro)?;
     if !base.exists() {
         // docker-style: pull on demand instead of forcing the user back to
@@ -65,8 +69,6 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
         println!("Unable to find image '{distro}' locally, pulling...");
         crate::commands::pull::pull_one(cfg, &distro)?;
     }
-
-    cfg.ensure_dirs()?;
     let disk_path = cfg.vm_disk(&name);
     let iso_path  = cfg.vm_seed_iso(&name);
     let ci_dir    = cfg.vm_ci_dir(&name);

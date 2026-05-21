@@ -50,9 +50,9 @@ enum Cmd {
         #[arg(short = 'm', long = "memory")] memory_gb: Option<u32>,
         /// Disk in GB.
         #[arg(short = 's', long = "disk")] disk_gb: Option<u32>,
-        /// Login user (default: random vmXXXXXX).
+        /// Login user (required — qvm has no default).
         #[arg(short = 'u', long)] user: Option<String>,
-        /// Plaintext password (default: configured hash).
+        /// Plaintext password (required — qvm has no default).
         #[arg(short = 'p', long)] password: Option<String>,
         /// Do NOT autostart on host boot.
         #[arg(long)] no_autostart: bool,
