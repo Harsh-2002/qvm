@@ -1,144 +1,117 @@
 #!/bin/sh
-# install.sh — download the latest qvm static binary, install it, and set up shell completions.
-# Usage: curl -fsSL https://raw.githubusercontent.com/Harsh-2002/qvm/main/install.sh | sh
+# install.sh — full qvm setup in one command.
+#
+# What this does:
+#   1. Download and install the latest static qvm binary
+#   2. Install all host dependencies (virsh, virt-install, qemu-img, genisoimage, wget)
+#   3. Write /etc/qvm/config.toml and create data directories
+#   4. Download all five built-in distro base images
+#   5. Install shell completions (bash / zsh / fish) and print the reload command
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/Harsh-2002/qvm/main/install.sh | sudo sh
+#
+# Run as root (sudo). Tested on Debian, Ubuntu, Fedora, Alpine, Arch.
 set -eu
 
 REPO="Harsh-2002/qvm"
-BINARY="qvm"
 INSTALL_DIR="/usr/local/bin"
+ARTIFACT_URL="https://nightly.link/${REPO}/workflows/build/main/qvm-linux-amd64-static.zip"
 
 # ---------- helpers -----------------------------------------------------------
 
-die() { echo "error: $*" >&2; exit 1; }
+die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+info() { printf '\033[34m==>\033[0m %s\n' "$*"; }
+ok()   { printf '\033[32m  ok\033[0m %s\n' "$*"; }
 
 need() {
-    command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not found in PATH."
+    command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not found. Install it and retry."
 }
 
-# ---------- checks ------------------------------------------------------------
+# ---------- guards ------------------------------------------------------------
+
+[ "$(uname -s)" = "Linux" ] || die "only Linux is supported."
+[ "$(uname -m)" = "x86_64" ] || die "only x86_64 is supported."
+[ "$(id -u)" -eq 0 ]         || die "please run as root: sudo sh install.sh"
 
 need curl
-need install
+need unzip
 
-# Must run as root (the binary goes to /usr/local/bin and we set up system-wide completions).
-if [ "$(id -u)" -ne 0 ]; then
-    die "please run as root: sudo sh install.sh"
-fi
+# ---------- 1. download and install binary ------------------------------------
 
-# ---------- detect platform ---------------------------------------------------
-
-OS="$(uname -s)"
-ARCH="$(uname -m)"
-
-if [ "$OS" != "Linux" ]; then
-    die "unsupported OS: $OS (only Linux is supported)"
-fi
-
-if [ "$ARCH" != "x86_64" ]; then
-    die "unsupported architecture: $ARCH (only x86_64 is supported)"
-fi
-
-# ---------- fetch latest release artifact from CI ----------------------------
-
-echo "==> Fetching latest qvm artifact from GitHub..."
-
-# Get the latest successful run's artifact download URL.
-ARTIFACT_URL="$(
-    curl -fsSL \
-        -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-    | grep '"browser_download_url"' \
-    | grep 'qvm-linux-amd64-static' \
-    | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/' \
-    | head -n1
-)"
-
-# Fallback: pull from the latest workflow artifact (no GitHub release needed).
-if [ -z "$ARTIFACT_URL" ]; then
-    echo "    (no GitHub release found — downloading from latest CI run artifact)"
-    ARTIFACT_URL="https://nightly.link/${REPO}/workflows/build/main/qvm-linux-amd64-static.zip"
-    DOWNLOAD_ZIP=1
-else
-    DOWNLOAD_ZIP=0
-fi
+info "Downloading latest qvm binary..."
 
 TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
+# shellcheck disable=SC2064
+trap "rm -rf '$TMPDIR'" EXIT
 
-if [ "${DOWNLOAD_ZIP:-0}" = "1" ]; then
-    need unzip
-    echo "==> Downloading ${ARTIFACT_URL} ..."
-    curl -fsSL --progress-bar -o "$TMPDIR/qvm.zip" "$ARTIFACT_URL"
-    unzip -q "$TMPDIR/qvm.zip" -d "$TMPDIR"
-    BIN_PATH="$TMPDIR/qvm"
-else
-    echo "==> Downloading ${ARTIFACT_URL} ..."
-    curl -fsSL --progress-bar -o "$TMPDIR/qvm" "$ARTIFACT_URL"
-    BIN_PATH="$TMPDIR/qvm"
+curl -fsSL --progress-bar -o "$TMPDIR/qvm.zip" "$ARTIFACT_URL"
+unzip -q "$TMPDIR/qvm.zip" -d "$TMPDIR"
+
+BIN="$TMPDIR/qvm"
+chmod +x "$BIN"
+"$BIN" --version >/dev/null 2>&1 || die "downloaded binary failed sanity check — wrong arch?"
+
+install -m 0755 "$BIN" "${INSTALL_DIR}/qvm"
+ok "qvm $("${INSTALL_DIR}/qvm" --version) installed to ${INSTALL_DIR}/qvm"
+
+# ---------- 2. install host dependencies via qvm doctor ----------------------
+
+info "Installing host dependencies (virsh, virt-install, qemu-img, genisoimage, wget)..."
+# doctor --install is interactive but non-interactive when all deps present.
+# Pipe yes so it auto-confirms the install prompt on first run.
+printf 'yes\n' | "${INSTALL_DIR}/qvm" doctor --install || true
+
+# ---------- 3 + 4. first-run setup + download all base images ----------------
+
+info "Running qvm init --pull-all (config, dirs, and all 5 distro images)..."
+info "This may take several minutes depending on your connection."
+"${INSTALL_DIR}/qvm" init --pull-all
+ok "Setup complete."
+
+# ---------- 5. shell completions ---------------------------------------------
+
+info "Installing shell completions..."
+
+# bash
+BASH_COMP_DIR="/etc/bash_completion.d"
+if [ -d "$BASH_COMP_DIR" ]; then
+    "${INSTALL_DIR}/qvm" completions bash > "${BASH_COMP_DIR}/qvm"
+    ok "bash completion -> ${BASH_COMP_DIR}/qvm"
 fi
 
-chmod +x "$BIN_PATH"
+# zsh
+ZSH_COMP_DIR="/usr/share/zsh/site-functions"
+if [ -d "$ZSH_COMP_DIR" ]; then
+    "${INSTALL_DIR}/qvm" completions zsh > "${ZSH_COMP_DIR}/_qvm"
+    ok "zsh completion -> ${ZSH_COMP_DIR}/_qvm"
+fi
 
-# Sanity-check the downloaded binary.
-"$BIN_PATH" --version >/dev/null 2>&1 || die "downloaded binary failed to execute — unexpected format or wrong architecture."
-
-# ---------- install binary ----------------------------------------------------
-
-echo "==> Installing ${BINARY} to ${INSTALL_DIR}/${BINARY}"
-install -m 0755 "$BIN_PATH" "${INSTALL_DIR}/${BINARY}"
-
-echo "==> $(${INSTALL_DIR}/${BINARY} --version)"
-
-# ---------- shell completions -------------------------------------------------
-
-SHELL_NAME="$(basename "${SHELL:-/bin/sh}")"
-
-install_completion_bash() {
-    COMP_DIR="/etc/bash_completion.d"
-    if [ -d "$COMP_DIR" ]; then
-        echo "==> Installing bash completion -> ${COMP_DIR}/qvm"
-        "${INSTALL_DIR}/${BINARY}" completions bash > "${COMP_DIR}/qvm"
-    else
-        echo "    (bash completion dir ${COMP_DIR} not found — skipping)"
-    fi
-}
-
-install_completion_zsh() {
-    ZSH_SITE="/usr/share/zsh/site-functions"
-    if [ -d "$ZSH_SITE" ]; then
-        echo "==> Installing zsh completion -> ${ZSH_SITE}/_qvm"
-        "${INSTALL_DIR}/${BINARY}" completions zsh > "${ZSH_SITE}/_qvm"
-    else
-        echo "    (zsh site-functions dir ${ZSH_SITE} not found — skipping)"
-    fi
-}
-
-install_completion_fish() {
-    FISH_DIR="/usr/share/fish/completions"
-    if [ -d "$FISH_DIR" ]; then
-        echo "==> Installing fish completion -> ${FISH_DIR}/qvm.fish"
-        "${INSTALL_DIR}/${BINARY}" completions fish > "${FISH_DIR}/qvm.fish"
-    else
-        echo "    (fish completions dir ${FISH_DIR} not found — skipping)"
-    fi
-}
-
-# Install completion for the current shell, then also bash as a baseline.
-case "$SHELL_NAME" in
-    bash)  install_completion_bash ;;
-    zsh)   install_completion_zsh; install_completion_bash ;;
-    fish)  install_completion_fish ;;
-    *)     install_completion_bash ;;
-esac
+# fish (system-wide)
+FISH_COMP_DIR="/usr/share/fish/completions"
+if [ -d "$FISH_COMP_DIR" ]; then
+    "${INSTALL_DIR}/qvm" completions fish > "${FISH_COMP_DIR}/qvm.fish"
+    ok "fish completion -> ${FISH_COMP_DIR}/qvm.fish"
+fi
 
 # ---------- done --------------------------------------------------------------
 
-echo ""
-echo "qvm installed successfully."
-echo ""
-echo "Next steps:"
-echo "  sudo qvm doctor           # check host dependencies"
-echo "  sudo qvm doctor --install # install missing dependencies"
-echo "  sudo qvm init --pull-all  # first-run setup + download base images"
-echo ""
-echo "Docs: https://github.com/${REPO}"
+printf '\n'
+printf '\033[32m================================================\033[0m\n'
+printf '\033[32m  qvm is ready.\033[0m\n'
+printf '\033[32m================================================\033[0m\n'
+printf '\n'
+printf 'Reload completions in your current shell:\n'
+printf '\n'
+printf '  bash:  source /etc/bash_completion.d/qvm\n'
+printf '  zsh:   source /usr/share/zsh/site-functions/_qvm\n'
+printf '  fish:  source /usr/share/fish/completions/qvm.fish\n'
+printf '\n'
+printf 'Or just open a new terminal — completions load automatically.\n'
+printf '\n'
+printf 'Quick start:\n'
+printf '  qvm ls                             # list VMs\n'
+printf '  qvm run myvm ubuntu:24.04          # create a VM\n'
+printf '  qvm ssh-cmd myvm                   # get the ssh command\n'
+printf '\n'
+printf 'Docs: https://github.com/%s\n' "$REPO"
