@@ -1,9 +1,9 @@
-use crate::cmd::run_inherit;
+use crate::commands::pull::pull_one;
 use crate::config::{self, Config};
-use crate::error::Result;
-use crate::util::hash_password;
+use crate::error::{Error, Result};
+use crate::util::{hash_password, prompt, prompt_bool, prompt_u32};
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::path::Path;
 
 pub fn run(config_path: &Path, pull_all: bool, yes: bool) -> Result<()> {
@@ -27,30 +27,7 @@ pub fn run(config_path: &Path, pull_all: bool, yes: bool) -> Result<()> {
     println!("  cloudinit {}", cfg.paths.cloudinit.display());
 
     if pull_all {
-        println!();
-        println!("Downloading baseline images ({} distros)...", cfg.distros.len());
-        for (key, d) in &cfg.distros {
-            let dest = cfg.paths.images.join(&d.image);
-            if dest.exists() {
-                println!("  [skip] {key:16}  already present");
-                continue;
-            }
-            println!("  [pull] {key:16}  {}", d.url);
-            let tmp = dest.with_extension("partial");
-            let _ = fs::remove_file(&tmp);
-            let r = run_inherit("wget", [
-                "-q", "--show-progress",
-                d.url.as_str(),
-                "-O", tmp.to_str().unwrap(),
-            ]);
-            match r {
-                Ok(_) => { fs::rename(&tmp, &dest)?; }
-                Err(e) => {
-                    let _ = fs::remove_file(&tmp);
-                    eprintln!("  [warn] {key}: {e}");
-                }
-            }
-        }
+        pull_all_images(&cfg)?;
     } else {
         println!();
         println!("Next:");
@@ -61,12 +38,45 @@ pub fn run(config_path: &Path, pull_all: bool, yes: bool) -> Result<()> {
     Ok(())
 }
 
+/// Download every base image in `cfg.distros` that isn't already present.
+/// Returns an error if ANY download fails (lists which distros failed).
+fn pull_all_images(cfg: &Config) -> Result<()> {
+    crate::cmd::require("wget")?;
+    println!();
+    println!("Downloading baseline images ({} distros)...", cfg.distros.len());
+
+    let mut failed: Vec<(String, String)> = Vec::new();
+    for (key, d) in &cfg.distros {
+        let dest = cfg.paths.images.join(&d.image);
+        if dest.exists() {
+            println!("  [skip] {key:16}  already present");
+            continue;
+        }
+        println!("  [pull] {key:16}  {}", d.url);
+        match pull_one(cfg, key) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("  [fail] {key}: {e}");
+                failed.push((key.clone(), e.to_string()));
+            }
+        }
+    }
+
+    if failed.is_empty() {
+        println!();
+        println!("All baseline images downloaded.");
+        return Ok(());
+    }
+    Err(Error::User(format!(
+        "{}/{} image download(s) failed: {}",
+        failed.len(), cfg.distros.len(),
+        failed.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(", "),
+    )))
+}
+
 // ── wizard ────────────────────────────────────────────────────────────────────
 
 fn run_wizard(config_path: &Path) -> Result<()> {
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
-
     println!();
     println!("╔══════════════════════════════════════════════════╗");
     println!("║          qvm  —  first-time setup                ║");
@@ -76,54 +86,46 @@ fn run_wizard(config_path: &Path) -> Result<()> {
     println!("Press Enter to accept the default shown in [brackets].");
     println!();
 
-    // ── network ───────────────────────────────────────────────────────────────
     println!("── Network ─────────────────────────────────────────");
-    let bridge = prompt(&mut input, "Bridge interface (must exist on this host)", "br0");
+    let bridge = prompt("Bridge interface (must exist on this host)", "br0");
 
-    // ── VM defaults ───────────────────────────────────────────────────────────
     println!();
     println!("── VM defaults ──────────────────────────────────────");
     println!("  Built-in distros: ubuntu:24.04  debian:13  fedora:42  alpine:3.20  rocky:9");
-    let distro    = prompt(&mut input, "Default distro", "debian:13");
-    let cpus      = prompt_u32(&mut input, "Default vCPUs", 2);
-    let memory_gb = prompt_u32(&mut input, "Default RAM (GB)", 4);
-    let disk_gb   = prompt_u32(&mut input, "Default disk (GB)", 50);
-    let autostart = prompt_bool(&mut input, "Autostart VMs on host boot?", true);
+    let distro    = prompt("Default distro", "debian:13");
+    let cpus      = prompt_u32("Default vCPUs", 2);
+    let memory_gb = prompt_u32("Default RAM (GB)", 4);
+    let disk_gb   = prompt_u32("Default disk (GB)", 50);
+    let autostart = prompt_bool("Autostart VMs on host boot?", true);
 
-    // ── GRUB ──────────────────────────────────────────────────────────────────
     println!();
     println!("── Boot ─────────────────────────────────────────────");
-    let grub_timeout = prompt_u32(&mut input, "GRUB timeout in seconds (0 = instant boot)", 0);
+    let grub_timeout = prompt_u32("GRUB timeout in seconds (0 = instant boot)", 0);
 
-    // ── VNC ───────────────────────────────────────────────────────────────────
     println!();
     println!("── VNC ──────────────────────────────────────────────");
     println!("  127.0.0.1 = localhost only (tunnel via SSH)  |  0.0.0.0 = expose on LAN");
-    let vnc_bind = prompt(&mut input, "VNC bind address", "127.0.0.1");
+    let vnc_bind = prompt("VNC bind address", "127.0.0.1");
 
-    // ── SSH keys ──────────────────────────────────────────────────────────────
     println!();
     println!("── SSH keys ─────────────────────────────────────────");
     println!("  Keys are injected into every VM for both the login user and root.");
     println!("  Paste one key per line. Empty line when done.");
-    let ssh_keys = collect_ssh_keys(&mut input);
+    let ssh_keys = collect_ssh_keys();
 
-    // ── default password ──────────────────────────────────────────────────────
     println!();
     println!("── Default VM password ──────────────────────────────");
     println!("  Used when `qvm run` is called without -p.");
     println!("  It is stored as a SHA-512 crypt hash in the config.");
-    let pw_plain  = prompt(&mut input, "Default password", "changeme");
+    let pw_plain  = prompt("Default password", "changeme");
     let pw_hash   = hash_password(&pw_plain)?;
 
-    // ── paths ─────────────────────────────────────────────────────────────────
     println!();
     println!("── Storage paths ────────────────────────────────────");
-    let images_path    = prompt(&mut input, "Base image cache dir", "/var/lib/qvm/images");
-    let vms_path       = prompt(&mut input, "VM disk dir",          "/var/lib/qvm/vms");
-    let cloudinit_path = prompt(&mut input, "Cloud-init seed dir",  "/var/lib/qvm/cloudinit");
+    let images_path    = prompt("Base image cache dir", "/var/lib/qvm/images");
+    let vms_path       = prompt("VM disk dir",          "/var/lib/qvm/vms");
+    let cloudinit_path = prompt("Cloud-init seed dir",  "/var/lib/qvm/cloudinit");
 
-    // ── write config ──────────────────────────────────────────────────────────
     let toml = render_config(WizardAnswers {
         bridge: &bridge,
         distro: &distro,
@@ -172,7 +174,7 @@ fn render_config(a: WizardAnswers<'_>) -> String {
         "    # \"ssh-ed25519 AAAA... you@host\",\n".to_string()
     } else {
         a.ssh_keys.iter()
-            .map(|k| format!("    \"{k}\",\n"))
+            .map(|k| format!("    \"{}\",\n", toml_escape(k)))
             .collect()
     };
 
@@ -196,6 +198,7 @@ cpus         = {cpus}
 memory_gb    = {mem}
 disk_gb      = {disk}
 autostart    = {autostart}
+# 0 = instant boot. Comment out the line to keep the distro default.
 grub_timeout = {grub}
 
 # Default VM password hash (SHA-512 crypt). Override per-VM with `qvm run -p`.
@@ -220,20 +223,39 @@ ssh_keys = [
 # uefi   = false
 # url    = \"https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img\"
 ",
-        images  = a.images_path,
-        vms     = a.vms_path,
-        ci      = a.cloudinit_path,
-        bridge  = a.bridge,
-        distro  = a.distro,
+        images  = toml_escape(a.images_path),
+        vms     = toml_escape(a.vms_path),
+        ci      = toml_escape(a.cloudinit_path),
+        bridge  = toml_escape(a.bridge),
+        distro  = toml_escape(a.distro),
         cpus    = a.cpus,
         mem     = a.memory_gb,
         disk    = a.disk_gb,
         autostart = autostart_str,
         grub    = a.grub_timeout,
-        pw_hash = a.pw_hash,
-        vnc     = a.vnc_bind,
+        pw_hash = toml_escape(a.pw_hash),
+        vnc     = toml_escape(a.vnc_bind),
         keys    = keys_toml,
     )
+}
+
+/// Escape a string for use inside a TOML basic (double-quoted) string.
+fn toml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"'  => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04X}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn write_defaults(config_path: &Path) -> Result<()> {
@@ -243,53 +265,14 @@ fn write_defaults(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
-// ── prompt helpers ────────────────────────────────────────────────────────────
-
-fn prompt(input: &mut impl BufRead, question: &str, default: &str) -> String {
-    print!("  {question} [{default}]: ");
-    io::stdout().flush().ok();
-    let mut line = String::new();
-    input.read_line(&mut line).ok();
-    let t = line.trim().to_string();
-    if t.is_empty() { default.to_string() } else { t }
-}
-
-fn prompt_bool(input: &mut impl BufRead, question: &str, default: bool) -> bool {
-    let hint = if default { "Y/n" } else { "y/N" };
-    print!("  {question} [{hint}]: ");
-    io::stdout().flush().ok();
-    let mut line = String::new();
-    input.read_line(&mut line).ok();
-    match line.trim().to_ascii_lowercase().as_str() {
-        "y" | "yes" => true,
-        "n" | "no"  => false,
-        _           => default,
-    }
-}
-
-fn prompt_u32(input: &mut impl BufRead, question: &str, default: u32) -> u32 {
-    loop {
-        print!("  {question} [{default}]: ");
-        io::stdout().flush().ok();
-        let mut line = String::new();
-        input.read_line(&mut line).ok();
-        let t = line.trim().to_string();
-        if t.is_empty() { return default; }
-        match t.parse::<u32>() {
-            Ok(n) => return n,
-            Err(_) => println!("  Please enter a number."),
-        }
-    }
-}
-
-fn collect_ssh_keys(input: &mut impl BufRead) -> Vec<String> {
+fn collect_ssh_keys() -> Vec<String> {
     let mut keys = Vec::new();
     let mut n = 1u32;
     loop {
         print!("  Key {n} (empty to finish): ");
         io::stdout().flush().ok();
         let mut line = String::new();
-        input.read_line(&mut line).ok();
+        io::stdin().read_line(&mut line).ok();
         let t = line.trim().to_string();
         if t.is_empty() { break; }
         keys.push(t);

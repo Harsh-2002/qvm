@@ -58,9 +58,8 @@ ok "qvm $("${INSTALL_DIR}/qvm" --version) installed to ${INSTALL_DIR}/qvm"
 # ---------- 2. install host dependencies via qvm doctor ----------------------
 
 info "Installing host dependencies (virsh, virt-install, qemu-img, genisoimage, wget)..."
-# doctor --install is interactive but non-interactive when all deps present.
-# Pipe yes so it auto-confirms the install prompt on first run.
-printf 'yes\n' | "${INSTALL_DIR}/qvm" doctor --install || true
+"${INSTALL_DIR}/qvm" doctor --install --yes \
+    || die "failed to install host dependencies — install them manually and re-run \`qvm init --yes --pull-all\`."
 
 # ---------- 3 + 4. first-run setup + download all base images ----------------
 

@@ -2,16 +2,14 @@ use crate::cmd::run;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::libvirt;
-use crate::util::require_name;
+use crate::util::prompt_bool;
 use std::io::{self, Write};
 use std::thread::sleep;
 use std::time::Duration;
 
 pub fn set_cpu(name: &str, n: u32) -> Result<()> {
-    libvirt::require_virsh()?;
-    require_name(name)?;
+    libvirt::require_defined(name)?;
     if n == 0 { return Err(Error::User("vcpus must be > 0".into())); }
-    if !libvirt::exists(name) { return Err(Error::User(format!("VM '{name}' not found."))); }
     let ns = n.to_string();
     run("virsh", ["setvcpus", name, &ns, "--config", "--maximum"])?;
     run("virsh", ["setvcpus", name, &ns, "--config"])?;
@@ -20,10 +18,8 @@ pub fn set_cpu(name: &str, n: u32) -> Result<()> {
 }
 
 pub fn set_ram(name: &str, gb: u32) -> Result<()> {
-    libvirt::require_virsh()?;
-    require_name(name)?;
+    libvirt::require_defined(name)?;
     if gb == 0 { return Err(Error::User("memory (GB) must be > 0".into())); }
-    if !libvirt::exists(name) { return Err(Error::User(format!("VM '{name}' not found."))); }
     let mb = (gb as u64) * 1024;
     let s = format!("{mb}M");
     run("virsh", ["setmaxmem", name, &s, "--config"])?;
@@ -33,22 +29,18 @@ pub fn set_ram(name: &str, gb: u32) -> Result<()> {
 }
 
 pub fn resize_disk(cfg: &Config, name: &str, size: &str) -> Result<()> {
-    libvirt::require_virsh()?;
+    libvirt::require_defined(name)?;
     crate::cmd::require("qemu-img")?;
-    require_name(name)?;
-    if !libvirt::exists(name) { return Err(Error::User(format!("VM '{name}' not found."))); }
 
-    let disk = cfg.paths.vms.join(format!("{name}.qcow2"));
+    let disk = cfg.vm_disk(name);
     if !disk.exists() {
         return Err(Error::User(format!("disk file not found: {}", disk.display())));
     }
 
     if libvirt::is_running(name) {
-        print!("VM must be off first. Shut down now? (yes/no): ");
-        io::stdout().flush().ok();
-        let mut line = String::new();
-        io::stdin().read_line(&mut line)?;
-        if line.trim() != "yes" { return Err(Error::User("aborted.".into())); }
+        if !prompt_bool("VM must be off first. Shut down now?", false) {
+            return Err(Error::User("aborted.".into()));
+        }
         let _ = libvirt::shutdown(name);
         print!("Waiting for shutdown");
         io::stdout().flush().ok();

@@ -3,6 +3,7 @@ use clap_complete::Shell;
 use qvm::commands;
 use qvm::config::Config;
 use qvm::error::Result;
+use qvm::util;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -108,6 +109,8 @@ enum Cmd {
     Doctor {
         /// After listing what's missing, install it.
         #[arg(long)] install: bool,
+        /// Non-interactive: assume yes to the install prompt.
+        #[arg(long, short = 'y')] yes: bool,
     },
     /// Print shell completion script (bash | zsh | fish | elvish | powershell).
     Completions { shell: Shell },
@@ -116,9 +119,9 @@ enum Cmd {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // `completions` and `doctor` don't need root - they're diagnostic.
+    // `completions` doesn't need root - it's purely a script generator.
     let needs_root = !matches!(cli.cmd, Cmd::Completions { .. });
-    if needs_root && !is_root() {
+    if needs_root && !util::is_root() {
         eprintln!("qvm: must run as root.");
         return ExitCode::from(1);
     }
@@ -135,14 +138,13 @@ fn main() -> ExitCode {
 fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
     // Commands that don't need a config file.
     match &cli.cmd {
-        Cmd::Init { pull_all, yes } => return commands::init::run(cfg_path, *pull_all, *yes),
-        Cmd::Doctor { install } => return commands::doctor::run_doctor(*install),
-        Cmd::Completions { shell } => return commands::completions::run::<Cli>(*shell),
+        Cmd::Init { pull_all, yes }    => return commands::init::run(cfg_path, *pull_all, *yes),
+        Cmd::Doctor { install, yes }   => return commands::doctor::run_doctor(*install, *yes),
+        Cmd::Completions { shell }     => return commands::completions::run::<Cli>(*shell),
         _ => {}
     }
 
     let cfg = Config::load(Some(cfg_path))?;
-    cfg.ensure_dirs()?;
 
     match &cli.cmd {
         Cmd::Init { .. } | Cmd::Doctor { .. } | Cmd::Completions { .. } => unreachable!("handled above"),
@@ -182,12 +184,3 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
         Cmd::ResizeDisk { name, size } => commands::resources::resize_disk(&cfg, name, size),
     }
 }
-
-#[cfg(unix)]
-fn is_root() -> bool {
-    // SAFETY: geteuid() is always safe to call.
-    unsafe { libc_geteuid() == 0 }
-}
-
-extern "C" { fn geteuid() -> u32; }
-unsafe fn libc_geteuid() -> u32 { geteuid() }

@@ -2,6 +2,7 @@
 
 use qvm::config::{builtin_distros, Config};
 use std::io::Write;
+use std::path::Path;
 
 fn write_tmp(contents: &str) -> tempfile::NamedTempFile {
     let mut f = tempfile::NamedTempFile::new().expect("tempfile");
@@ -129,6 +130,14 @@ fn builtin_distros_others_are_bios_and_bash() {
         assert!(!d.uefi, "{key} should be BIOS, not UEFI");
         assert_eq!(d.shell, "/bin/bash", "{key} should use /bin/bash");
     }
+}
+
+#[test]
+fn vm_path_accessors_join_under_configured_dirs() {
+    let cfg = Config::load(Some(Path::new("/nonexistent/qvm.toml"))).unwrap();
+    assert_eq!(cfg.vm_disk("web01"),     Path::new("/var/lib/qvm/vms/web01.qcow2"));
+    assert_eq!(cfg.vm_seed_iso("web01"), Path::new("/var/lib/qvm/cloudinit/web01.iso"));
+    assert_eq!(cfg.vm_ci_dir("web01"),   Path::new("/var/lib/qvm/cloudinit/web01"));
 }
 
 #[test]

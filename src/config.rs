@@ -197,6 +197,21 @@ impl Config {
         Ok(self.paths.images.join(&d.image))
     }
 
+    /// Per-VM disk file `<vms>/<name>.qcow2`.
+    pub fn vm_disk(&self, name: &str) -> PathBuf {
+        self.paths.vms.join(format!("{name}.qcow2"))
+    }
+
+    /// Per-VM cloud-init seed ISO `<cloudinit>/<name>.iso`.
+    pub fn vm_seed_iso(&self, name: &str) -> PathBuf {
+        self.paths.cloudinit.join(format!("{name}.iso"))
+    }
+
+    /// Per-VM cloud-init working directory `<cloudinit>/<name>/`.
+    pub fn vm_ci_dir(&self, name: &str) -> PathBuf {
+        self.paths.cloudinit.join(name)
+    }
+
     pub fn distro(&self, key: &str) -> Result<&Distro> {
         self.distros.get(key).ok_or_else(|| Error::User(
             format!("unknown distro '{key}'. Run `qvm distros` to list available.")

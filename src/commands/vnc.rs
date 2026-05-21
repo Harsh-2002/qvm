@@ -1,21 +1,21 @@
+use crate::cmd::{have, run as cmd_run};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::libvirt;
-use crate::util::require_name;
 use std::process::Command;
 
 pub fn run(cfg: &Config, name: &str, open: bool) -> Result<()> {
-    libvirt::require_virsh()?;
-    require_name(name)?;
-    if !libvirt::exists(name) { return Err(Error::User(format!("VM '{name}' not found."))); }
+    libvirt::require_defined(name)?;
     if !libvirt::is_running(name) {
-        return Err(Error::User(format!("'{name}' is not running. Start it first: qvm start {name}")));
+        return Err(Error::User(format!(
+            "'{name}' is not running. Start it first: qvm start {name}"
+        )));
     }
     let port = libvirt::vnc_display(name).ok_or_else(||
         Error::User(format!("'{name}' has no VNC display configured.")))?;
 
     let bind = &cfg.vnc.bind;
-    let host = match host_label() { Some(h) => h, None => "this-host".into() };
+    let host = host_label().unwrap_or_else(|| "this-host".into());
 
     println!("VNC for '{name}':");
     println!("  bind   : {bind}");
@@ -33,12 +33,13 @@ pub fn run(cfg: &Config, name: &str, open: bool) -> Result<()> {
     }
 
     if open {
-        // Best-effort local launch. Tries common viewers; not fatal if none found.
+        // 0.0.0.0 means "listen on all interfaces" — a local viewer should
+        // still connect via loopback, not the literal 0.0.0.0.
+        let target_host = if bind == "0.0.0.0" { "127.0.0.1" } else { bind.as_str() };
+        let target = format!("{target_host}:{port}");
+
         for prog in ["remote-viewer", "vncviewer", "tigervnc-viewer", "vinagre"] {
-            if Command::new("sh").arg("-c").arg(format!("command -v {prog}"))
-                .status().map(|s| s.success()).unwrap_or(false)
-            {
-                let target = format!("{bind}:{port}");
+            if have(prog) {
                 let _ = Command::new(prog).arg(&target).spawn();
                 return Ok(());
             }
@@ -49,7 +50,7 @@ pub fn run(cfg: &Config, name: &str, open: bool) -> Result<()> {
 }
 
 fn host_label() -> Option<String> {
-    let out = Command::new("hostname").output().ok()?;
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let s = cmd_run("hostname", std::iter::empty::<&str>()).ok()?;
+    let s = s.trim().to_string();
     if s.is_empty() { None } else { Some(s) }
 }

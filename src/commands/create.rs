@@ -3,7 +3,7 @@ use crate::cmd::{require, run as cmd_run, run_inherit};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::libvirt;
-use crate::util::{hash_password, random_username, require_name, require_username};
+use crate::util::{hash_password, random_username, require_username};
 
 #[derive(Debug)]
 pub struct Args {
@@ -18,7 +18,8 @@ pub struct Args {
 }
 
 pub fn run(cfg: &Config, a: Args) -> Result<()> {
-    libvirt::require_virsh()?;
+    // Precondition: domain must not already be defined.
+    libvirt::require_absent(&a.name)?;
     require("virt-install")?;
     require("qemu-img")?;
     require("genisoimage")?;
@@ -38,14 +39,10 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
             u
         }
     };
-    require_name(&name)?;
     require_username(&user)?;
 
     if cpus == 0 || ram_gb == 0 || disk_gb == 0 {
         return Err(Error::User("cpus, memory, and disk must all be > 0".into()));
-    }
-    if libvirt::exists(&name) {
-        return Err(Error::User(format!("VM '{name}' already exists.")));
     }
 
     let d = cfg.distro(&distro)?;
@@ -62,9 +59,9 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     };
 
     cfg.ensure_dirs()?;
-    let disk_path = cfg.paths.vms.join(format!("{name}.qcow2"));
-    let iso_path  = cfg.paths.cloudinit.join(format!("{name}.iso"));
-    let ci_dir    = cfg.paths.cloudinit.join(&name);
+    let disk_path = cfg.vm_disk(&name);
+    let iso_path  = cfg.vm_seed_iso(&name);
+    let ci_dir    = cfg.vm_ci_dir(&name);
 
     // --- cloud-init seed ---
     println!("Generating cloud-init seed...");

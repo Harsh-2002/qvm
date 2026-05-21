@@ -1,20 +1,15 @@
 //! `qvm doctor` - check host dependencies and optionally install them.
 
-use crate::cmd::{have, run};
+use crate::cmd::{have, run, run_inherit};
 use crate::error::{Error, Result};
+use crate::util::{self, prompt_bool};
 use std::fs;
-use std::io::{self, Write};
 
 /// Every external program qvm depends on, plus what package provides it
-/// on each distro family. The first entry per row is the canonical name
-/// (apt/Debian-style); the rest are family overrides.
+/// on each distro family.
 struct Dep {
-    /// Binary qvm calls.
     binary: &'static str,
-    /// Why qvm needs it (shown to the user).
     why: &'static str,
-    /// Package name on each distro family.
-    /// (debian/ubuntu, fedora/rhel, alpine, arch)
     packages: Packages,
 }
 
@@ -103,7 +98,6 @@ impl Family {
             Ok(s) => s,
             Err(_) => return Family::Unknown,
         };
-        // Check ID_LIKE first (most general), then ID.
         let mut id = String::new();
         let mut id_like = String::new();
         for line in raw.lines() {
@@ -138,7 +132,7 @@ impl Family {
             Family::Fedora => p.dnf,
             Family::Alpine => p.apk,
             Family::Arch   => p.pacman,
-            Family::Unknown=> p.apt,  // fallback to most common
+            Family::Unknown=> p.apt,
         }
     }
 
@@ -153,23 +147,11 @@ impl Family {
     }
 }
 
-/// Check libvirt daemon is reachable. Most distros need `systemctl enable
-/// --now libvirtd`. We don't enable it ourselves (root-level service
-/// management is the user's call), but we report it.
 fn libvirtd_ok() -> bool {
     run("virsh", ["-c", "qemu:///system", "list"]).is_ok()
 }
 
-/// Check that the user is root (we should be, since main.rs enforces it,
-/// but we re-check defensively for "qvm doctor" specifically).
-fn is_root() -> bool {
-    unsafe { libc_geteuid() == 0 }
-}
-
-extern "C" { fn geteuid() -> u32; }
-unsafe fn libc_geteuid() -> u32 { unsafe { geteuid() } }
-
-pub fn run_doctor(install: bool) -> Result<()> {
+pub fn run_doctor(install: bool, assume_yes: bool) -> Result<()> {
     let family = Family::from_os_release();
     println!("Host: {}", family.name());
     println!();
@@ -177,8 +159,11 @@ pub fn run_doctor(install: bool) -> Result<()> {
     // 1. Binary presence check
     println!("Dependencies:");
     let mut missing: Vec<&Dep> = Vec::new();
+    let mut virsh_present = false;
     for d in DEPS {
-        if have(d.binary) {
+        let present = have(d.binary);
+        if d.binary == "virsh" { virsh_present = present; }
+        if present {
             println!("  [ok]   {:<22} {}", d.binary, d.why);
         } else {
             println!("  [MISS] {:<22} {}", d.binary, d.why);
@@ -189,7 +174,7 @@ pub fn run_doctor(install: bool) -> Result<()> {
     // 2. libvirtd reachability (only meaningful if virsh is present)
     println!();
     println!("Services:");
-    if have("virsh") {
+    if virsh_present {
         if libvirtd_ok() {
             println!("  [ok]   libvirtd reachable");
         } else {
@@ -202,7 +187,7 @@ pub fn run_doctor(install: bool) -> Result<()> {
 
     // 3. Root check
     println!();
-    if is_root() {
+    if util::is_root() {
         println!("  [ok]   running as root");
     } else {
         println!("  [WARN] qvm must be run as root for VM operations");
@@ -248,39 +233,32 @@ pub fn run_doctor(install: bool) -> Result<()> {
         return Err(Error::User("dependencies missing".into()));
     }
 
-    // --install: confirm, then run
-    if !is_root() {
+    if !util::is_root() {
         return Err(Error::User("--install requires root".into()));
     }
     println!();
     println!("About to run:");
     println!("  {full}");
-    print!("Proceed? [y/N]: ");
-    io::stdout().flush().ok();
-    let mut line = String::new();
-    io::stdin().read_line(&mut line)?;
-    if !line.trim().eq_ignore_ascii_case("y") {
+    if !assume_yes && !prompt_bool("Proceed?", false) {
         return Err(Error::User("aborted".into()));
     }
 
-    // Most package managers refresh metadata implicitly, but apt is the
-    // common exception worth handling.
+    // apt is the common case that needs an explicit metadata refresh.
     if family == Family::Debian {
-        let _ = crate::cmd::run_inherit("apt-get", ["update"]);
+        let _ = run_inherit("apt-get", ["update"]);
     }
 
-    // Run the install. We split the install_cmd into its parts.
     let mut parts = install_cmd.split_whitespace();
     let prog = parts.next().unwrap();
     let cmd_args: Vec<&str> = parts.collect();
     let mut final_args: Vec<&str> = cmd_args;
     for p in &pkgs { final_args.push(p); }
 
-    crate::cmd::run_inherit(prog, final_args)?;
+    run_inherit(prog, final_args)?;
 
     println!();
     println!("Re-running checks...");
-    run_doctor(false)
+    run_doctor(false, assume_yes)
 }
 
 fn print_examples() {
@@ -299,10 +277,8 @@ fn print_examples() {
     println!("  # Create with explicit resources and a known username");
     println!("  qvm run db01 ubuntu:24.04 -c 4 -m 8 -s 100 -u admin");
     println!();
-    println!("  # List all VMs");
+    println!("  # List, IP, SSH");
     println!("  qvm ls");
-    println!();
-    println!("  # Get IP and SSH in");
     println!("  qvm ip web01");
     println!("  qvm ssh-cmd web01");
     println!();

@@ -6,12 +6,22 @@ use std::fs;
 pub fn run(cfg: &Config, distro: &str) -> Result<()> {
     require("wget")?;
     let d = cfg.distro(distro)?;
-    let dest = cfg.image_path(distro)?;
-    let tmp  = dest.with_extension("partial");
-
     println!("Pulling {distro}:");
     println!("  {}", d.url);
-    println!("  -> {}", dest.display());
+    println!("  -> {}", cfg.image_path(distro)?.display());
+    pull_one(cfg, distro)?;
+    println!("Ready: {}", cfg.image_path(distro)?.display());
+    Ok(())
+}
+
+/// Atomic download for a single distro: wget to `<image>.partial`, rename on success.
+///
+/// Used by both `qvm pull <distro>` and `qvm init --pull-all`. Caller is
+/// expected to have already verified that `wget` is on PATH.
+pub fn pull_one(cfg: &Config, distro: &str) -> Result<()> {
+    let d    = cfg.distro(distro)?;
+    let dest = cfg.image_path(distro)?;
+    let tmp  = dest.with_extension("partial");
 
     let _ = fs::remove_file(&tmp);
     let r = run_inherit("wget", [
@@ -19,13 +29,13 @@ pub fn run(cfg: &Config, distro: &str) -> Result<()> {
         d.url.as_str(),
         "-O", tmp.to_str().unwrap(),
     ]);
-    if r.is_err() {
+    if let Err(e) = r {
         let _ = fs::remove_file(&tmp);
         return Err(Error::User(format!(
-            "download failed; {} is unchanged.", dest.display()
+            "download failed for {distro}: {e}; {} is unchanged.",
+            dest.display()
         )));
     }
     fs::rename(&tmp, &dest)?;
-    println!("Ready: {}", dest.display());
     Ok(())
 }

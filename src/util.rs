@@ -1,5 +1,8 @@
 use crate::error::{Error, Result};
 use rand::Rng;
+use std::io::{self, Write};
+
+// ── name & username validation ────────────────────────────────────────────────
 
 /// libvirt domain name rules (kept permissive but safe).
 pub fn valid_vm_name(s: &str) -> bool {
@@ -50,6 +53,8 @@ pub fn require_username(u: &str) -> Result<()> {
     Ok(())
 }
 
+// ── password ──────────────────────────────────────────────────────────────────
+
 /// SHA-512 crypt of a plaintext password (compatible with /etc/shadow and cloud-init).
 pub fn hash_password(plain: &str) -> Result<String> {
     use sha_crypt::{sha512_simple, Sha512Params};
@@ -57,4 +62,66 @@ pub fn hash_password(plain: &str) -> Result<String> {
         .map_err(|e| Error::User(format!("password hash setup failed: {e:?}")))?;
     sha512_simple(plain, &params)
         .map_err(|e| Error::User(format!("password hash failed: {e:?}")))
+}
+
+// ── root check ────────────────────────────────────────────────────────────────
+
+extern "C" { fn geteuid() -> u32; }
+
+/// True when the current process is running with effective UID 0.
+pub fn is_root() -> bool {
+    // SAFETY: geteuid() is always safe; no preconditions, no side effects.
+    unsafe { geteuid() == 0 }
+}
+
+// ── interactive prompts ───────────────────────────────────────────────────────
+
+/// Ask the user a free-text question and return their answer (or `default` if blank).
+pub fn prompt(question: &str, default: &str) -> String {
+    print!("  {question} [{default}]: ");
+    io::stdout().flush().ok();
+    let mut line = String::new();
+    io::stdin().read_line(&mut line).ok();
+    let t = line.trim();
+    if t.is_empty() { default.to_string() } else { t.to_string() }
+}
+
+/// Ask a yes/no question. Empty input returns `default`.
+pub fn prompt_bool(question: &str, default: bool) -> bool {
+    let hint = if default { "Y/n" } else { "y/N" };
+    print!("  {question} [{hint}]: ");
+    io::stdout().flush().ok();
+    let mut line = String::new();
+    io::stdin().read_line(&mut line).ok();
+    match line.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => true,
+        "n" | "no"  => false,
+        _           => default,
+    }
+}
+
+/// Ask for a u32. Re-prompts on parse error. Empty input returns `default`.
+pub fn prompt_u32(question: &str, default: u32) -> u32 {
+    loop {
+        print!("  {question} [{default}]: ");
+        io::stdout().flush().ok();
+        let mut line = String::new();
+        io::stdin().read_line(&mut line).ok();
+        let t = line.trim();
+        if t.is_empty() { return default; }
+        match t.parse::<u32>() {
+            Ok(n) => return n,
+            Err(_) => println!("  Please enter a number."),
+        }
+    }
+}
+
+/// Stricter "type the literal phrase" confirmation for destructive ops.
+/// Returns true only if the user types `phrase` exactly (case-sensitive).
+pub fn confirm_phrase(question: &str, phrase: &str) -> bool {
+    print!("{question} ");
+    io::stdout().flush().ok();
+    let mut line = String::new();
+    io::stdin().read_line(&mut line).ok();
+    line.trim() == phrase
 }
