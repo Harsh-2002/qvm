@@ -406,7 +406,8 @@ fn draw_create(f: &mut Frame, area: Rect, app: &App) {
         Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
     );
 
-    let labels = ["Name", "Distro", "CPUs", "RAM (GB)", "Disk (GB)", "User", "Password"];
+    let labels = ["Name", "Distro", "CPUs", "RAM (GB)", "Disk (GB)",
+                  "User", "Password", "Nested virt"];
     for (i, label) in labels.iter().enumerate() {
         let focused = i == c.field;
         let bullet = if focused { "▸ " } else { "  " };
@@ -446,6 +447,11 @@ fn field_value(c: &CreateForm, i: usize) -> String {
             let n = c.password.value.chars().count();
             if n == 0 { "(required — no default)".into() } else { "•".repeat(n) }
         }
+        7 => {
+            // Nested virt checkbox. `Space` / `←` / `→` toggle it.
+            if c.nested { "[x] enabled  (host-passthrough)" .into() }
+            else        { "[ ] disabled (host-model -vmx -svm)".into() }
+        }
         _ => String::new(),
     }
 }
@@ -464,6 +470,7 @@ fn place_create_cursor(f: &mut Frame, app: &App, body: Rect) {
         4 => c.disk_gb.cursor,
         5 if !c.user.value.trim().is_empty() => c.user.cursor,
         6 if !c.password.value.is_empty() => c.password.cursor,
+        // field 7 (nested) has no text cursor.
         _ => return,
     };
     // Inner content starts after the sidebar (28 cols) + content pane border (1 col)

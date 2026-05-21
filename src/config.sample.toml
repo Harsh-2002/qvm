@@ -20,6 +20,12 @@ grub_timeout = 0                       # instant boot; comment out to keep distr
 # Username + password are required at create time and have no default —
 # pass them every time via -u/-p on the CLI or in the TUI Create form.
 
+# Nested virtualization for new VMs. `true` keeps `--cpu host-passthrough`
+# (the guest sees vmx/svm and can run KVM inside). `false` switches to
+# host-model -vmx -svm so the guest doesn't accidentally inherit them.
+# Override per-VM with `qvm run --no-nested`.
+# nested = true
+
 [vnc]
 bind = "127.0.0.1"                     # "0.0.0.0" to expose on LAN (no auth by default)
 

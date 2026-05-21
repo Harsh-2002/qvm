@@ -102,7 +102,7 @@ pub struct App {
 
 #[derive(Debug, Clone, Default)]
 pub struct CreateForm {
-    pub field:       usize, // 0..=6
+    pub field:       usize, // 0..=7
     pub name:        TextInput,
     pub distro_idx:  usize, // index into available distros
     pub distros:     Vec<String>,
@@ -112,6 +112,9 @@ pub struct CreateForm {
     pub disk_gb:     TextInput,
     pub user:        TextInput,
     pub password:    TextInput,
+    /// Nested virtualization toggle — `true` means the new VM gets
+    /// `--cpu host-passthrough` (can run KVM inside). Default true.
+    pub nested:      bool,
 }
 
 impl App {
@@ -315,8 +318,8 @@ impl App {
             Action::Restart       => self.act_lifecycle("restart", libvirt::reboot),
             Action::ConfirmDelete => self.act_delete(cfg),
             // Create-form interactions.
-            Action::CreateNext    => self.create.field = (self.create.field + 1) % 7,
-            Action::CreatePrev    => self.create.field = (self.create.field + 6) % 7,
+            Action::CreateNext    => self.create.field = (self.create.field + 1) % 8,
+            Action::CreatePrev    => self.create.field = (self.create.field + 7) % 8,
             Action::CreateInsert(c) => self.create_insert(c),
             Action::CreateBackspace => self.create_focused_mut(|f| f.backspace()),
             Action::CreateDelete    => self.create_focused_mut(|f| f.delete()),
@@ -400,6 +403,7 @@ impl App {
             cpus:      TextInput::with_value(cfg.defaults.cpus.to_string()),
             memory_gb: TextInput::with_value(cfg.defaults.memory_gb.to_string()),
             disk_gb:   TextInput::with_value(cfg.defaults.disk_gb.to_string()),
+            nested:    cfg.defaults.nested,
             ..Default::default()
         };
         if let Some(idx) = f.distros.iter().position(|d| d == &cfg.defaults.distro) {
@@ -430,7 +434,7 @@ impl App {
     fn create_focused_mut<F: FnOnce(&mut TextInput)>(&mut self, f: F) {
         match self.create.field {
             0 => f(&mut self.create.name),
-            // 1 (distro) is not a text field — left/right cycles it.
+            // 1 (distro) and 7 (nested toggle) are not text fields.
             2 => f(&mut self.create.cpus),
             3 => f(&mut self.create.memory_gb),
             4 => f(&mut self.create.disk_gb),
@@ -446,6 +450,10 @@ impl App {
             2..=4 => {
                 if c.is_ascii_digit() { self.create_focused_mut(|f| f.insert(c)); }
             }
+            7 => {
+                // Space toggles the nested-virt checkbox.
+                if c == ' ' { self.create.nested = !self.create.nested; }
+            }
             _ => self.create_focused_mut(|f| f.insert(c)),
         }
     }
@@ -456,6 +464,8 @@ impl App {
                 let n = self.create.distros.len();
                 self.create.distro_idx = (self.create.distro_idx + n - 1) % n;
             }
+        } else if self.create.field == 7 {
+            self.create.nested = !self.create.nested;
         } else { self.create_focused_mut(|f| f.left()); }
     }
 
@@ -464,6 +474,8 @@ impl App {
             if !self.create.distros.is_empty() {
                 self.create.distro_idx = (self.create.distro_idx + 1) % self.create.distros.len();
             }
+        } else if self.create.field == 7 {
+            self.create.nested = !self.create.nested;
         } else { self.create_focused_mut(|f| f.right()); }
     }
 
@@ -499,6 +511,7 @@ impl App {
             }
             s.to_string()
         };
+        let nested = self.create.nested;
         self.close_to_detail();
         Ok(crate::commands::create::Args {
             name,
@@ -509,6 +522,7 @@ impl App {
             user: Some(user),
             password: Some(password),
             no_autostart: false,
+            nested: Some(nested),
         })
     }
 }

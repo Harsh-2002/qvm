@@ -56,6 +56,9 @@ enum Cmd {
         #[arg(short = 'p', long)] password: Option<String>,
         /// Do NOT autostart on host boot.
         #[arg(long)] no_autostart: bool,
+        /// Disable nested virtualization for this VM (host-model -vmx -svm).
+        /// Default is enabled (host-passthrough).
+        #[arg(long)] no_nested: bool,
     },
 
     /// Delete a VM and all its data.
@@ -165,7 +168,7 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
     match cmd {
         Cmd::Init { .. } | Cmd::Doctor { .. } | Cmd::Completions { .. } => unreachable!("handled above"),
 
-        Cmd::Create { name, distro, cpus, memory_gb, disk_gb, user, password, no_autostart } => {
+        Cmd::Create { name, distro, cpus, memory_gb, disk_gb, user, password, no_autostart, no_nested } => {
             commands::create::run(&cfg, commands::create::Args {
                 name: name.clone(),
                 distro: distro.clone(),
@@ -175,6 +178,7 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
                 user: user.clone(),
                 password: password.clone(),
                 no_autostart: *no_autostart,
+                nested: if *no_nested { Some(false) } else { None },
             })
         }
 

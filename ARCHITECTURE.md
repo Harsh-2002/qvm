@@ -419,13 +419,15 @@ diagram form first then prose:
    ┌────────────────────────────────────────┐
    │ virt-install --import                  │
    │   --memory 4096 --vcpus 2              │
-   │   --cpu host-passthrough               │
+   │   --cpu host-passthrough (or host-model│
+   │       -vmx -svm if nested=false)       │
    │   --disk path=web01.qcow2,bus=virtio   │
    │   --disk path=web01.iso,device=cdrom   │
    │   --osinfo name=debian12,require=off   │
    │   --graphics vnc,listen=<bind>         │
    │   --network bridge=<bridge>            │
    │   --channel ... qemu-guest-agent       │
+   │   --memballoon model=virtio            │
    │   --noautoconsole                      │
    └──────────────────┬─────────────────────┘
                       │

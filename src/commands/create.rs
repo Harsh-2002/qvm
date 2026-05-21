@@ -15,6 +15,10 @@ pub struct Args {
     pub user:     Option<String>,
     pub password: Option<String>,
     pub no_autostart: bool,
+    /// `Some(true)` forces nested virt on, `Some(false)` forces off,
+    /// `None` falls back to `cfg.defaults.nested`. CLI maps `--no-nested`
+    /// to `Some(false)`.
+    pub nested:   Option<bool>,
 }
 
 pub fn run(cfg: &Config, a: Args) -> Result<()> {
@@ -105,17 +109,38 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     let cdromarg  = format!("path={},device=cdrom", iso_path.display());
     let vncarg    = format!("vnc,listen={}", cfg.vnc.bind);
 
+    // Nested-virt knob.
+    //   true (default): host-passthrough exposes every host CPU flag to the
+    //                   guest, including vmx/svm — so the guest can run KVM
+    //                   inside itself.
+    //   false:          host-model + explicitly subtract vmx/svm so a guest
+    //                   never accidentally inherits nested-virt extensions.
+    //                   Useful when you're handing a VM to someone you don't
+    //                   want spinning up VMs of their own.
+    let nested = a.nested.unwrap_or(cfg.defaults.nested);
+    let cpu_arg: String = if nested {
+        "host-passthrough".into()
+    } else {
+        "host-model,-vmx,-svm".into()
+    };
+
     let mut args: Vec<String> = vec![
-        "--name".into(),     name.clone(),
-        "--memory".into(),   memory_str,
-        "--vcpus".into(),    cpus_str,
-        "--cpu".into(),      "host-passthrough".into(),
-        "--disk".into(),     diskarg,
-        "--disk".into(),     cdromarg,
-        "--osinfo".into(),   osinfo,
-        "--graphics".into(), vncarg,
-        "--network".into(),  netarg,
-        "--channel".into(),  "unix,target_type=virtio,name=org.qemu.guest_agent.0".into(),
+        "--name".into(),       name.clone(),
+        "--memory".into(),     memory_str,
+        "--vcpus".into(),      cpus_str,
+        "--cpu".into(),        cpu_arg,
+        "--disk".into(),       diskarg,
+        "--disk".into(),       cdromarg,
+        "--osinfo".into(),     osinfo,
+        "--graphics".into(),   vncarg,
+        "--network".into(),    netarg,
+        "--channel".into(),    "unix,target_type=virtio,name=org.qemu.guest_agent.0".into(),
+        // Explicit virtio memory balloon. virt-install adds one by default
+        // for most osinfo IDs, but that defaulting can change between
+        // releases; spelling it out keeps every qvm-created VM consistent.
+        // Guest needs qemu-guest-agent (cloud-init enables it) for the host
+        // to actually reclaim memory — until then the device sits idle.
+        "--memballoon".into(), "model=virtio".into(),
         "--import".into(),
         "--noautoconsole".into(),
     ];
@@ -132,6 +157,7 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     println!();
     println!("VM '{name}' created.");
     println!("  distro {distro}   cpus {cpus}   ram {ram_gb}G   disk {disk_gb}G   user {user}");
+    if !nested { println!("  nested virtualization: disabled"); }
     println!();
     println!("  qvm ip {name}        # address (wait ~30s for boot)");
     println!("  qvm ssh-cmd {name}   # ssh command");

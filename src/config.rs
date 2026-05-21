@@ -43,6 +43,11 @@ pub struct Defaults {
     pub disk_gb: u32,
     pub autostart: bool,
     pub grub_timeout: Option<u32>,
+    /// Default for nested virtualization in new VMs. `true` means guests
+    /// see vmx/svm via `--cpu host-passthrough` and can themselves run
+    /// KVM. `false` switches to `host-model,-vmx,-svm`. Overridable per
+    /// VM via `qvm run --no-nested`.
+    pub nested: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -97,6 +102,7 @@ impl Default for Defaults {
             disk_gb: 50,
             autostart: true,
             grub_timeout: Some(0),
+            nested: true,
         }
     }
 }
