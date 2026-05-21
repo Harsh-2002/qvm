@@ -69,6 +69,7 @@ impl StepKind {
             Done       => Done,
         }
     }
+
     fn prev(self) -> Self {
         use StepKind::*;
         match self {
@@ -82,6 +83,18 @@ impl StepKind {
         }
     }
     fn idx(self) -> usize { self as usize }
+}
+
+/// Which half of the SSH-keys step the keyboard drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshFocus { Detected, Input }
+impl SshFocus {
+    fn toggle(self) -> Self {
+        match self {
+            SshFocus::Detected => SshFocus::Input,
+            SshFocus::Input    => SshFocus::Detected,
+        }
+    }
 }
 
 struct OnboardApp {
@@ -100,7 +113,17 @@ struct OnboardApp {
 
     detected_keys: Vec<String>,
     key_selected:  Vec<bool>,
+    /// Active input line on the SSH-keys step. Accepts every character
+    /// including space (real SSH keys are `ssh-X <body> <comment>`).
+    /// Enter commits this to `added_keys` and clears it.
     paste_buf:     TextInput,
+    /// Pasted keys the user has committed via Enter (separate from
+    /// detected_keys). Listed below the input box.
+    added_keys:    Vec<String>,
+    /// Which section of the SSH-keys step has keyboard focus.
+    ssh_focus:     SshFocus,
+    /// Row cursor in the detected-keys list when ssh_focus == Detected.
+    ssh_detected_idx: usize,
 
     images_path:    TextInput,
     vms_path:       TextInput,
@@ -137,6 +160,11 @@ impl OnboardApp {
             detected_keys: keys,
             key_selected,
             paste_buf:     TextInput::default(),
+            added_keys:    Vec::new(),
+            // Default focus to Input — most users have at most one detected
+            // key and just want to start typing/pasting.
+            ssh_focus:     SshFocus::Input,
+            ssh_detected_idx: 0,
 
             images_path:    TextInput::with_value("/var/lib/qvm/images"),
             vms_path:       TextInput::with_value("/var/lib/qvm/vms"),
@@ -159,15 +187,19 @@ impl OnboardApp {
         }
     }
 
+    /// All SSH keys that will be written to config: every detected key
+    /// whose checkbox is on, plus every key the user committed via the
+    /// input box (`added_keys`). The currently-typed `paste_buf` content
+    /// is NOT included until the user presses Enter — pressing Enter on
+    /// empty buffer is the "I'm done" signal.
     fn selected_keys(&self) -> Vec<String> {
         let mut keys: Vec<String> = self.detected_keys.iter().enumerate()
             .filter(|(i, _)| self.key_selected.get(*i).copied().unwrap_or(false))
             .map(|(_, k)| k.clone())
             .collect();
-        for extra in self.paste_buf.value.lines() {
-            let t = extra.trim();
-            if !t.is_empty() && !keys.contains(&t.to_string()) {
-                keys.push(t.to_string());
+        for extra in &self.added_keys {
+            if !keys.contains(extra) {
+                keys.push(extra.clone());
             }
         }
         keys
@@ -236,6 +268,100 @@ where F: FnOnce() -> R {
     let _ = execute!(stdout(), EnterAlternateScreen, Hide);
     let _ = terminal.clear();
     r
+}
+
+// ── SSH-keys step helpers ────────────────────────────────────────────────────
+
+fn handle_ssh_detected(app: &mut OnboardApp, k: KeyEvent) {
+    match k.code {
+        KeyCode::Up | KeyCode::Char('k') if !app.detected_keys.is_empty() => {
+            if app.ssh_detected_idx == 0 {
+                app.ssh_detected_idx = app.detected_keys.len() - 1;
+            } else {
+                app.ssh_detected_idx -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') if !app.detected_keys.is_empty() => {
+            app.ssh_detected_idx = (app.ssh_detected_idx + 1) % app.detected_keys.len();
+        }
+        KeyCode::Char(' ') => {
+            if let Some(slot) = app.key_selected.get_mut(app.ssh_detected_idx) {
+                *slot = !*slot;
+            }
+        }
+        // Pressing Enter on the detected list jumps focus to the input box.
+        // The actual "advance step" behavior lives in the Input branch
+        // because empty-Enter is the universal "I'm done" gesture.
+        KeyCode::Enter => {
+            app.ssh_focus = SshFocus::Input;
+        }
+        _ => {}
+    }
+}
+
+fn handle_ssh_input(app: &mut OnboardApp, k: KeyEvent) {
+    match k.code {
+        KeyCode::Left      => app.paste_buf.left(),
+        KeyCode::Right     => app.paste_buf.right(),
+        KeyCode::Home      => app.paste_buf.home(),
+        KeyCode::End       => app.paste_buf.end(),
+        KeyCode::Backspace => app.paste_buf.backspace(),
+        KeyCode::Delete    => app.paste_buf.delete(),
+        // Space is a real character here — SSH keys contain spaces
+        // between the key-type, the body, and the comment.
+        KeyCode::Char(c)   => app.paste_buf.insert(c),
+        KeyCode::Enter => {
+            let candidate = app.paste_buf.value.trim().to_string();
+            if candidate.is_empty() {
+                // Empty Enter = done. Apply the no-keys guard.
+                if app.selected_keys().is_empty() {
+                    app.flash = Some((
+                        "No SSH keys selected. You won't be able to ssh in. Press [y] to continue anyway.".into(),
+                        false,
+                    ));
+                } else {
+                    app.step = app.step.next();
+                    app.flash = None;
+                }
+            } else if !is_plausible_ssh_key(&candidate) {
+                app.flash = Some((
+                    "That doesn't look like an OpenSSH public key (expected ssh-ed25519 / ssh-rsa / ecdsa-sha2-... followed by a base64 body).".into(),
+                    false,
+                ));
+            } else {
+                // Commit and clear. Dedupe against both detected + already-added.
+                let dup_detected = app.detected_keys.iter().any(|d| d == &candidate);
+                let dup_added    = app.added_keys.iter().any(|d| d == &candidate);
+                if dup_detected || dup_added {
+                    app.flash = Some((
+                        "Already in the list (skipped).".into(),
+                        true,
+                    ));
+                } else {
+                    app.added_keys.push(candidate);
+                    app.flash = Some((
+                        format!("Added (total: {}). Paste another or press Enter on empty to continue.",
+                            app.added_keys.len()),
+                        true,
+                    ));
+                }
+                app.paste_buf = TextInput::default();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Cheap shape check: starts with an OpenSSH key-type prefix and has at
+/// least three space-separated tokens (type, body, comment) — or two if
+/// the user pasted without a comment.
+fn is_plausible_ssh_key(s: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "ssh-ed25519 ", "ssh-rsa ", "ssh-dss ",
+        "ecdsa-sha2-nistp256 ", "ecdsa-sha2-nistp384 ", "ecdsa-sha2-nistp521 ",
+        "sk-ssh-ed25519@openssh.com ", "sk-ecdsa-sha2-nistp256@openssh.com ",
+    ];
+    PREFIXES.iter().any(|p| s.starts_with(p)) && s.split_whitespace().count() >= 2
 }
 
 // ── event handling ───────────────────────────────────────────────────────────
@@ -341,34 +467,31 @@ fn handle_key(
             }
             _ => {}
         },
-        StepKind::SshKeys => match k.code {
-            KeyCode::Char(' ') => {
-                // Bulk-toggle all detected keys. Selection is all-on or
-                // all-off — power users add specific keys via the paste box.
-                let any_off = app.key_selected.iter().any(|b| !b);
-                for b in &mut app.key_selected { *b = any_off; }
-            }
-            // The `y` override path comes BEFORE generic Char(c) so it
-            // wins when the user is dismissing the "no keys" warning.
-            KeyCode::Char('y') | KeyCode::Char('Y')
-                if app.selected_keys().is_empty() && app.flash.is_some() => {
-                    app.step = app.step.next();
-                    app.flash = None;
-            }
-            KeyCode::Char(c)   => app.paste_buf.insert(c),
-            KeyCode::Backspace => app.paste_buf.backspace(),
-            KeyCode::Enter => {
-                if app.selected_keys().is_empty() {
-                    app.flash = Some((
-                        "No SSH keys selected. You won't be able to ssh in. Press [y] to continue anyway.".into(),
-                        false,
-                    ));
-                } else {
-                    app.step = app.step.next();
+        StepKind::SshKeys => {
+            // Tab cycles focus between the detected-keys checklist and the
+            // input box. Detected list only gets focus if there's at least
+            // one detected key (otherwise Tab is a no-op).
+            if k.code == KeyCode::Tab || k.code == KeyCode::BackTab {
+                if !app.detected_keys.is_empty() {
+                    app.ssh_focus = app.ssh_focus.toggle();
                 }
+                return Ok(());
             }
-            _ => {}
-        },
+            // Dismiss "no keys" warning with y/Y. Runs before the focused-
+            // input branch so a pending warning can be overridden even when
+            // the input box has focus.
+            if app.flash.is_some() && app.selected_keys().is_empty()
+                && (k.code == KeyCode::Char('y') || k.code == KeyCode::Char('Y'))
+            {
+                app.step = app.step.next();
+                app.flash = None;
+                return Ok(());
+            }
+            match app.ssh_focus {
+                SshFocus::Detected => handle_ssh_detected(app, k),
+                SshFocus::Input    => handle_ssh_input(app, k),
+            }
+        }
         StepKind::Paths => match k.code {
             KeyCode::Tab       => { app.paths_field = (app.paths_field + 1) % 3; }
             KeyCode::BackTab   => { app.paths_field = (app.paths_field + 2) % 3; }
@@ -693,45 +816,98 @@ fn draw_ssh_keys(f: &mut Frame, area: Rect, app: &OnboardApp) {
         Line::from(Span::styled(
             "SSH public keys to install in every new VM (login user + root).",
             Style::default().fg(t.text_dim))),
-        Line::from(Span::styled(
-            "[Space] toggles detected keys · type to paste more · Enter when done",
-            Style::default().fg(t.text_faint))),
         Line::raw(""),
     ];
+
+    // Detected list (with focus indicator).
     if app.detected_keys.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No keys found in ~/.ssh/ or /home/$SUDO_USER/.ssh/. Paste below:",
+            "No keys found in ~/.ssh/ or /home/$SUDO_USER/.ssh/.",
             Style::default().fg(t.warn))));
-    } else {
-        lines.push(Line::from(Span::styled("Detected:",
+        lines.push(Line::from(Span::styled(
+            "Add one or more below.",
             Style::default().fg(t.text_dim))));
+    } else {
+        let header = if app.ssh_focus == SshFocus::Detected {
+            "Detected (focus — [↑↓] choose, [Space] toggle, [Tab] to input):"
+        } else {
+            "Detected (press [Tab] to focus this list):"
+        };
+        lines.push(Line::from(Span::styled(header, Style::default().fg(t.text_dim))));
         for (i, k) in app.detected_keys.iter().enumerate() {
             let on = app.key_selected.get(i).copied().unwrap_or(false);
+            let focused_row = app.ssh_focus == SshFocus::Detected && i == app.ssh_detected_idx;
+            let cursor = if focused_row { "▸ " } else { "  " };
+            let cursor_style = if focused_row {
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+            } else { Style::default().fg(t.text_faint) };
             let mark = if on { "[x]" } else { "[ ]" };
             let mark_style = if on {
                 Style::default().fg(t.ok).add_modifier(Modifier::BOLD)
             } else { Style::default().fg(t.text_faint) };
-            // Truncate long keys to fit.
             let preview: String = if k.chars().count() > 70 {
                 k.chars().take(67).collect::<String>() + "..."
             } else { k.clone() };
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::styled(cursor, cursor_style),
                 Span::styled(mark, mark_style),
                 Span::raw(" "),
                 Span::styled(preview, Style::default().fg(t.text)),
             ]));
         }
+    }
+    lines.push(Line::raw(""));
+
+    // Already-added list (committed via Enter).
+    if !app.added_keys.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("Added ({}):", app.added_keys.len()),
+            Style::default().fg(t.text_dim))));
+        for k in &app.added_keys {
+            let preview: String = if k.chars().count() > 70 {
+                k.chars().take(67).collect::<String>() + "..."
+            } else { k.clone() };
+            lines.push(Line::from(vec![
+                Span::styled("  • ", Style::default().fg(t.ok)),
+                Span::styled(preview, Style::default().fg(t.text)),
+            ]));
+        }
         lines.push(Line::raw(""));
     }
-    lines.push(Line::from(Span::styled(
-        "Paste extra keys here (one per line; Backspace to edit):",
-        Style::default().fg(t.text_dim))));
-    let paste_show = if app.paste_buf.value.is_empty() {
-        "(empty)".to_string()
-    } else { app.paste_buf.value.clone() };
-    lines.push(Line::from(Span::styled(paste_show,
-        Style::default().fg(t.text))));
+
+    // Input box. Focus indicator + cursor mark.
+    let input_label = if app.ssh_focus == SshFocus::Input {
+        "Paste a key, press [Enter] to add it. Empty [Enter] when done:"
+    } else {
+        "Press [Tab] to focus the input box, then paste keys:"
+    };
+    lines.push(Line::from(Span::styled(input_label, Style::default().fg(t.text_dim))));
+    let prompt_style = if app.ssh_focus == SshFocus::Input {
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+    } else { Style::default().fg(t.text_faint) };
+    let preview: String = if app.paste_buf.value.is_empty() {
+        if app.ssh_focus == SshFocus::Input {
+            "(type or paste a key)".to_string()
+        } else {
+            "(empty)".to_string()
+        }
+    } else if app.paste_buf.value.chars().count() > 80 {
+        app.paste_buf.value.chars().take(77).collect::<String>() + "..."
+    } else {
+        app.paste_buf.value.clone()
+    };
+    let preview_style = if app.paste_buf.value.is_empty() {
+        Style::default().fg(t.text_faint)
+    } else {
+        Style::default().fg(t.text)
+    };
+    let cursor_glyph = if app.ssh_focus == SshFocus::Input { " ▌" } else { "" };
+    lines.push(Line::from(vec![
+        Span::styled("  > ", prompt_style),
+        Span::styled(preview, preview_style),
+        Span::styled(cursor_glyph, prompt_style),
+    ]));
+
     if let Some((msg, ok)) = &app.flash {
         let style = if *ok { Style::default().fg(t.ok) } else { Style::default().fg(t.warn) };
         lines.push(Line::raw(""));
@@ -854,7 +1030,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &OnboardApp) {
         StepKind::Welcome    => "  [Enter] Begin   [Ctrl-C] Quit",
         StepKind::HostCheck  => "  [Enter] Continue   [i] Install missing   [Esc] Back",
         StepKind::Network    => "  [Enter] Continue   [↑/↓] Choose   type for custom   [Esc] Back",
-        StepKind::SshKeys    => "  [Space] Toggle detected   type to paste   [Enter] Continue   [Esc] Back",
+        StepKind::SshKeys    => "  [Tab] Switch focus   [Enter] Add key / done   [Space] Toggle detected   [Esc] Back",
         StepKind::Paths      => "  [Tab] Move   [Enter] Continue   [Esc] Back",
         StepKind::FirstImage => "  [↑/↓] Choose   [Enter] Pull   [Space] Skip   [Esc] Back",
         StepKind::Done       => "  [Enter] Finish   [Esc] Back",
