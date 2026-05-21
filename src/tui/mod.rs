@@ -87,10 +87,11 @@ fn main_loop(
         }
 
         if app.tick_due() {
-            // Make the spinner visible: flip the flag, repaint one frame so
-            // the user sees the indicator, then do the work synchronously.
-            app.is_refreshing = true;
-            terminal.draw(|f| ui::draw(f, &mut app)).map_err(io_err)?;
+            // Refresh inline. We intentionally do NOT do an extra
+            // terminal.draw with `is_refreshing=true` first — that caused
+            // visible flicker every 2 s as the spinner appeared and then
+            // disappeared in quick succession. The spinner remains on the
+            // App but only renders if a future async refresh model uses it.
             app.refresh(cfg);
         }
     }

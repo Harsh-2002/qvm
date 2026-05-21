@@ -147,6 +147,13 @@ impl App {
     }
 
     /// Refresh from libvirt. Best-effort: surfaces failures as a toast.
+    ///
+    /// IP lookups are CACHED across refreshes — once we have an IP for a
+    /// running VM, we don't re-query virsh agent every tick (each query
+    /// shells out to virsh up to 3× via agent/lease/arp fallback chain).
+    /// IPs only change on lease renewals, which are minutes apart at best;
+    /// the cost of a stale IP for a few seconds is negligible compared to
+    /// the latency of re-querying every tick.
     pub fn refresh(&mut self, _cfg: &Config) {
         self.is_refreshing = true;
         self.last_refresh = Some(Instant::now());
@@ -155,11 +162,18 @@ impl App {
         match result {
             Ok(doms) => {
                 let prev_selected_name = self.selected_name();
-                self.rows = doms.into_iter().map(|d| VmRow {
-                    ip: if d.state == "running" { libvirt::ipv4(&d.name) } else { None },
-                    name: d.name,
-                    state: d.state,
-                    dominfo: None,
+                // Reuse IPs we already learned for VMs that are still present.
+                let prev_ips: std::collections::HashMap<String, String> =
+                    self.rows.iter()
+                        .filter_map(|r| r.ip.as_ref().map(|ip| (r.name.clone(), ip.clone())))
+                        .collect();
+                self.rows = doms.into_iter().map(|d| {
+                    let ip = if d.state == "running" {
+                        prev_ips.get(&d.name).cloned().or_else(|| libvirt::ipv4(&d.name))
+                    } else {
+                        None
+                    };
+                    VmRow { ip, name: d.name, state: d.state, dominfo: None }
                 }).collect();
                 self.apply_sort();
 

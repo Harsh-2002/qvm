@@ -33,9 +33,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let theme = app.theme.clone();
 
-    // Reserve space for the optional toast line + action bar.
+    // Build the action list once and decide the action-bar layout up front
+    // so we know its exact height (and the body gets the leftover space).
+    let actions = build_actions(app);
+    let rows_of_actions = fit_action_rows(&actions, area.width.saturating_sub(4));
+    let action_bar_h: u16 = (rows_of_actions.len() as u16).max(1) + 2; // rows + 2 border lines
+
     let toast_h: u16 = if app.current_toast().is_some() { 1 } else { 0 };
-    let action_bar_h: u16 = 4; // 2 rows + 2 border rows
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -61,7 +65,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     if toast_h > 0 { draw_toast_line(f, layout[2], app); }
-    draw_action_bar(f, layout[3], app);
+    draw_action_bar(f, layout[3], app, &rows_of_actions);
 
     // Modal overlay — confirm delete renders centered on top of everything.
     if let Mode::ConfirmDelete = app.mode {
@@ -591,9 +595,89 @@ fn draw_toast_line(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn draw_action_bar(f: &mut Frame, area: Rect, app: &mut App) {
-    // Owned copy — having `&app.theme` alive would conflict with
-    // `&mut app.action_hits` below.
+/// All actions surfaced in the action bar for the current mode, in display
+/// order. Returns owned tuples of static strings so the caller can reflow.
+fn build_actions(app: &App) -> Vec<(&'static str, &'static str, bool)> {
+    // Use the *displayed* state so when the user presses Start, the row
+    // immediately shows "starting…" and the Start button dims without a
+    // wrong-direction flicker before the real state catches up.
+    let state = app.selected_row()
+        .map(|r| app.displayed_state(r))
+        .unwrap_or_default();
+    let running = state == "running";
+    let in_transition = state.ends_with('…');
+    let has_selection = !app.rows.is_empty();
+
+    if matches!(app.mode, Mode::CreateForm) {
+        vec![
+            ("Tab",   "Move",   true),
+            ("←/→",   "Distro", true),
+            ("Enter", "Create", true),
+            ("Esc",   "Cancel", true),
+        ]
+    } else if matches!(app.mode, Mode::ConfirmDelete) {
+        vec![
+            ("y",   "Confirm Delete", true),
+            ("n",   "Cancel",         true),
+            ("Esc", "Cancel",         true),
+        ]
+    } else {
+        // Order matters: lifecycle first, then create/view/utility.
+        vec![
+            ("s", "Start",    has_selection && !running && !in_transition),
+            ("t", "Stop",     has_selection &&  running && !in_transition),
+            ("r", "Restart",  has_selection &&  running && !in_transition),
+            ("e", "Console",  has_selection && !in_transition),
+            ("b", "Browser",  has_selection && !in_transition),
+            ("d", "Delete",   has_selection),
+            ("c", "Create",   true),
+            ("v", "VNC info", has_selection &&  running),
+            ("/", "Filter",   true),
+            ("o", "Sort",     true),
+            ("?", "Help",     true),
+            ("q", "Quit",     true),
+        ]
+    }
+}
+
+/// `[k] Label` button width in terminal cells.
+fn button_width(key: &str, label: &str) -> u16 {
+    // `[` `key` `]` ` ` `label`
+    (1 + key.chars().count() + 1 + 1 + label.chars().count()) as u16
+}
+
+/// Greedily pack action buttons into rows that each fit `max_w` cells.
+/// Most terminals show the action bar on a single line; very narrow ones
+/// wrap to 2 or 3 rows automatically.
+fn fit_action_rows<'a>(items: &[(&'a str, &'a str, bool)], max_w: u16)
+    -> Vec<Vec<(&'a str, &'a str, bool)>>
+{
+    const GAP:  u16 = 3; // separator between buttons
+    const LEAD: u16 = 2; // leading indent inside the action bar
+    let mut rows: Vec<Vec<(&str, &str, bool)>> = vec![];
+    let mut current: Vec<(&str, &str, bool)> = vec![];
+    let mut width: u16 = LEAD;
+    for item in items {
+        let bw = button_width(item.0, item.1);
+        let extra = if current.is_empty() { bw } else { GAP + bw };
+        if !current.is_empty() && width + extra > max_w {
+            rows.push(std::mem::take(&mut current));
+            width = LEAD + bw;
+            current.push(*item);
+        } else {
+            current.push(*item);
+            width += extra;
+        }
+    }
+    if !current.is_empty() { rows.push(current); }
+    rows
+}
+
+fn draw_action_bar(f: &mut Frame, area: Rect, app: &mut App,
+    rows: &[Vec<(&str, &str, bool)>])
+{
+    // Owned theme copy — keeps `&app.theme` alive from conflicting with
+    // `&mut app.action_hits` we mutate below.
     let t = app.theme.clone();
 
     let block = Block::default()
@@ -603,43 +687,9 @@ fn draw_action_bar(f: &mut Frame, area: Rect, app: &mut App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Decide which actions are enabled given current selection state.
-    let state = app.selected_row().map(|r| r.state.clone()).unwrap_or_default();
-    let running = state == "running";
-    let has_selection = !app.rows.is_empty();
-
-    let row1_in_create = matches!(app.mode, Mode::CreateForm);
-    let row1 = if row1_in_create {
-        vec![("Tab", "Move", true), ("←/→", "Distro", true), ("Enter", "Create", true), ("Esc", "Cancel", true)]
-    } else if matches!(app.mode, Mode::ConfirmDelete) {
-        vec![("y", "Confirm Delete", true), ("n", "Cancel", true), ("Esc", "Cancel", true)]
-    } else {
-        vec![
-            ("s", "Start",   has_selection && !running),
-            ("t", "Stop",    has_selection &&  running),
-            ("r", "Restart", has_selection &&  running),
-            ("e", "Console", has_selection),
-            ("b", "Browser", has_selection),
-            ("d", "Delete",  has_selection),
-        ]
-    };
-
-    let row2 = if row1_in_create || matches!(app.mode, Mode::ConfirmDelete) {
-        vec![]
-    } else {
-        vec![
-            ("c", "Create",  true),
-            ("v", "VNC info", has_selection),
-            ("/", "Filter",  true),
-            ("o", "Sort",    true),
-            ("?", "Help",    true),
-            ("q", "Quit",    true),
-        ]
-    };
-
-    draw_action_row(f, Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 }, &t, &row1, &mut app.action_hits);
-    if !row2.is_empty() {
-        draw_action_row(f, Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 }, &t, &row2, &mut app.action_hits);
+    for (i, row) in rows.iter().enumerate() {
+        let row_area = Rect { x: inner.x, y: inner.y + i as u16, width: inner.width, height: 1 };
+        draw_action_row(f, row_area, &t, row, &mut app.action_hits);
     }
 }
 
