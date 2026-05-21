@@ -368,7 +368,7 @@ fn extract_secondary_meta(row: &VmRow) -> Vec<(String, String)> {
         let val = line[colon+1..].trim();
         let pretty = match key {
             "Max memory" | "Used memory" => humanize_kib(val),
-            "CPU(s)"                     => format!("{val} vCPU"),
+            "CPU(s)"                     => format!("{val} CPU"),
             _                            => val.to_string(),
         };
         keep.push((key.to_string(), pretty));
@@ -406,7 +406,7 @@ fn draw_create(f: &mut Frame, area: Rect, app: &App) {
         Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
     );
 
-    let labels = ["Name", "Distro", "vCPUs", "RAM (GB)", "Disk (GB)", "User"];
+    let labels = ["Name", "Distro", "CPUs", "RAM (GB)", "Disk (GB)", "User", "Password"];
     for (i, label) in labels.iter().enumerate() {
         let focused = i == c.field;
         let bullet = if focused { "▸ " } else { "  " };
@@ -439,7 +439,12 @@ fn field_value(c: &CreateForm, i: usize) -> String {
         4 => c.disk_gb.value.clone(),
         5 => {
             let v = &c.user.value;
-            if v.trim().is_empty() { "(auto: vmXXXXXX)".into() } else { v.clone() }
+            if v.trim().is_empty() { "(required — no default)".into() } else { v.clone() }
+        }
+        6 => {
+            // Mask the password as bullets so onlookers can't read it.
+            let n = c.password.value.chars().count();
+            if n == 0 { "(required — no default)".into() } else { "•".repeat(n) }
         }
         _ => String::new(),
     }
@@ -458,6 +463,7 @@ fn place_create_cursor(f: &mut Frame, app: &App, body: Rect) {
         3 => c.memory_gb.cursor,
         4 => c.disk_gb.cursor,
         5 if !c.user.value.trim().is_empty() => c.user.cursor,
+        6 if !c.password.value.is_empty() => c.password.cursor,
         _ => return,
     };
     // Inner content starts after the sidebar (28 cols) + content pane border (1 col)
@@ -739,11 +745,12 @@ fn draw_confirm_dialog(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     let name = app.selected_name().unwrap_or_default();
 
-    let dialog_w: u16 = 48;
-    let dialog_h: u16 = 9;
+    // Wide enough that the explanation doesn't wrap, with room for two
+    // visually-distinct yes/no buttons drawn as their own bordered boxes.
+    let dialog_w: u16 = 64;
+    let dialog_h: u16 = 13;
     let r = centered(area, dialog_w, dialog_h);
 
-    // Render Clear underneath so background gets blanked.
     f.render_widget(Clear, r);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -754,32 +761,72 @@ fn draw_confirm_dialog(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(r);
     f.render_widget(block, r);
 
+    // Top: question + explanation. Interior width = dialog_w - 2 = 62 cols.
     let body = vec![
         Line::raw(""),
         Line::from(vec![
             Span::styled("  Delete ", t.text()),
             Span::styled(format!("'{name}'"),
                 Style::default().fg(t.err).add_modifier(Modifier::BOLD)),
-            Span::styled("?", t.text()),
+            Span::styled(" ?", t.text()),
         ]),
         Line::raw(""),
         Line::from(Span::styled(
-            "  This removes the disk, config and cloud-init seed.",
+            "  This permanently removes the VM's disk, libvirt config",
             t.dim(),
         )),
-        Line::from(Span::styled("  It cannot be undone.", t.dim())),
+        Line::from(Span::styled(
+            "  and cloud-init seed. It cannot be undone.",
+            t.dim(),
+        )),
         Line::raw(""),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("[y]", Style::default().fg(t.err).add_modifier(Modifier::BOLD)),
-            Span::styled(" Yes, delete   ", t.text()),
-            Span::styled("[n]", t.accent()),
-            Span::styled(" / ", t.faint()),
-            Span::styled("[Esc]", t.accent()),
-            Span::styled(" Cancel", t.text()),
-        ]),
     ];
-    f.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), inner);
+    f.render_widget(
+        Paragraph::new(body).wrap(Wrap { trim: false }),
+        Rect { x: inner.x, y: inner.y, width: inner.width, height: 7 },
+    );
+
+    // Buttons: two boxed regions side by side near the bottom of the modal.
+    // Delete is destructive (err palette); Cancel is neutral (accent).
+    let row_y = inner.y + inner.height - 3;
+    let btn_h: u16 = 3;
+    let btn1_w: u16 = 18;
+    let btn2_w: u16 = 14;
+    let gap: u16 = 4;
+    let total_w = btn1_w + gap + btn2_w;
+    let row_x = inner.x + (inner.width.saturating_sub(total_w)) / 2;
+
+    let btn1 = Rect { x: row_x, y: row_y, width: btn1_w, height: btn_h };
+    f.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(t.err)),
+        btn1,
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("[y]", Style::default().fg(t.err).add_modifier(Modifier::BOLD)),
+            Span::styled(" Delete", Style::default().fg(t.err).add_modifier(Modifier::BOLD)),
+        ])).alignment(Alignment::Center),
+        Rect { x: btn1.x, y: btn1.y + 1, width: btn1.width, height: 1 },
+    );
+
+    let btn2 = Rect { x: row_x + btn1_w + gap, y: row_y, width: btn2_w, height: btn_h };
+    f.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(t.border)),
+        btn2,
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("[n]", t.accent()),
+            Span::styled(" Cancel", t.text()),
+        ])).alignment(Alignment::Center),
+        Rect { x: btn2.x, y: btn2.y + 1, width: btn2.width, height: 1 },
+    );
 }
 
 fn centered(area: Rect, w: u16, h: u16) -> Rect {

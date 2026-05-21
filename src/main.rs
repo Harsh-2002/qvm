@@ -44,7 +44,7 @@ enum Cmd {
         name: String,
         /// Distro tag (e.g. ubuntu:24.04, debian:13). Uses default if omitted.
         distro: Option<String>,
-        /// vCPUs.
+        /// CPU count (no hyperthreading involved — each is a full CPU thread).
         #[arg(short = 'c', long)] cpus: Option<u32>,
         /// RAM in GB.
         #[arg(short = 'm', long = "memory")] memory_gb: Option<u32>,
@@ -103,7 +103,7 @@ enum Cmd {
     /// Download a distro's base image (atomic).
     Pull { distro: String },
 
-    /// Change vCPU count (reboot to apply).
+    /// Change CPU count (reboot to apply).
     SetCpu { name: String, vcpus: u32 },
     /// Change RAM in GB (reboot to apply).
     SetRam { name: String, gb: u32 },

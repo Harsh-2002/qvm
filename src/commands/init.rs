@@ -1,7 +1,7 @@
 use crate::commands::pull::pull_one;
 use crate::config::{self, Config};
 use crate::error::{Error, Result};
-use crate::util::{hash_password, prompt, prompt_bool, prompt_u32};
+use crate::util::{prompt, prompt_bool, prompt_u32};
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -96,7 +96,7 @@ fn run_wizard(config_path: &Path) -> Result<bool> {
     println!("── VM defaults ──────────────────────────────────────");
     println!("  Built-in distros: ubuntu:24.04  debian:13  fedora:42  alpine:3.20  rocky:9");
     let distro    = prompt("Default distro", "debian:13");
-    let cpus      = prompt_u32("Default vCPUs", 2);
+    let cpus      = prompt_u32("Default CPUs", 2);
     let memory_gb = prompt_u32("Default RAM (GB)", 4);
     let disk_gb   = prompt_u32("Default disk (GB)", 50);
     let autostart = prompt_bool("Autostart VMs on host boot?", true);
@@ -117,13 +117,6 @@ fn run_wizard(config_path: &Path) -> Result<bool> {
     let ssh_keys = collect_ssh_keys();
 
     println!();
-    println!("── Default VM password ──────────────────────────────");
-    println!("  Used when `qvm run` is called without -p.");
-    println!("  It is stored as a SHA-512 crypt hash in the config.");
-    let pw_plain  = prompt("Default password", "changeme");
-    let pw_hash   = hash_password(&pw_plain)?;
-
-    println!();
     println!("── Storage paths ────────────────────────────────────");
     let images_path    = prompt("Base image cache dir", "/var/lib/qvm/images");
     let vms_path       = prompt("VM disk dir",          "/var/lib/qvm/vms");
@@ -139,7 +132,6 @@ fn run_wizard(config_path: &Path) -> Result<bool> {
         grub_timeout,
         vnc_bind: &vnc_bind,
         ssh_keys: &ssh_keys,
-        pw_hash: &pw_hash,
         images_path: &images_path,
         vms_path: &vms_path,
         cloudinit_path: &cloudinit_path,
@@ -171,7 +163,6 @@ struct WizardAnswers<'a> {
     grub_timeout:   u32,
     vnc_bind:       &'a str,
     ssh_keys:       &'a [String],
-    pw_hash:        &'a str,
     images_path:    &'a str,
     vms_path:       &'a str,
     cloudinit_path: &'a str,
@@ -209,9 +200,9 @@ autostart    = {autostart}
 # 0 = instant boot. Comment out the line to keep the distro default.
 grub_timeout = {grub}
 
-# Default VM password hash (SHA-512 crypt). Override per-VM with `qvm run -p`.
-# Regenerate: mkpasswd --method=SHA-512  OR  openssl passwd -6
-password_hash = \"{pw_hash}\"
+# Username and password are required per-VM at create time; qvm has no
+# default for either. Pass them on the CLI (`-u`/`-p`) or in the TUI
+# Create form. SSH keys (below) are still global.
 
 [vnc]
 bind = \"{vnc}\"
@@ -241,7 +232,6 @@ ssh_keys = [
         disk    = a.disk_gb,
         autostart = autostart_str,
         grub    = a.grub_timeout,
-        pw_hash = toml_escape(a.pw_hash),
         vnc     = toml_escape(a.vnc_bind),
         keys    = keys_toml,
     )

@@ -3,7 +3,7 @@ use crate::cmd::{require, run as cmd_run, run_inherit};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::libvirt;
-use crate::util::{hash_password, random_username, require_username};
+use crate::util::{hash_password, require_username};
 
 #[derive(Debug)]
 pub struct Args {
@@ -31,15 +31,22 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     let ram_gb = a.memory_gb.unwrap_or(cfg.defaults.memory_gb);
     let disk_gb= a.disk_gb.unwrap_or(cfg.defaults.disk_gb);
 
-    let user = match a.user {
-        Some(u) => u,
-        None => {
-            let u = random_username();
-            println!("No --user given; generated login user: {u}");
-            u
-        }
-    };
+    // Username and password are NEVER defaulted. The user must supply both
+    // every time. The reason: an untyped default that the operator forgets
+    // to set ends up baked into every cloud-init seed in the homelab — a
+    // sleeper credential. Better to refuse to create the VM than to ship
+    // one with implicit credentials.
+    let user = a.user.ok_or_else(|| Error::User(
+        "--user is required. Pass -u <name> (or set the VM's login user in \
+         the TUI Create form).".into()
+    ))?;
     require_username(&user)?;
+
+    let pw_plain = a.password.ok_or_else(|| Error::User(
+        "--password is required. Pass -p <password> (or set it in the TUI \
+         Create form). qvm intentionally has no default password.".into()
+    ))?;
+    let pw_hash = hash_password(&pw_plain)?;
 
     if cpus == 0 || ram_gb == 0 || disk_gb == 0 {
         return Err(Error::User("cpus, memory, and disk must all be > 0".into()));
@@ -54,11 +61,6 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
         println!("Unable to find image '{distro}' locally, pulling...");
         crate::commands::pull::pull_one(cfg, &distro)?;
     }
-
-    let pw_hash = match a.password {
-        Some(p) => hash_password(&p)?,
-        None    => cfg.defaults.password_hash.clone(),
-    };
 
     cfg.ensure_dirs()?;
     let disk_path = cfg.vm_disk(&name);
@@ -129,7 +131,7 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     // --- summary ---
     println!();
     println!("VM '{name}' created.");
-    println!("  distro {distro}   vcpus {cpus}   ram {ram_gb}G   disk {disk_gb}G   user {user}");
+    println!("  distro {distro}   cpus {cpus}   ram {ram_gb}G   disk {disk_gb}G   user {user}");
     println!();
     println!("  qvm ip {name}        # address (wait ~30s for boot)");
     println!("  qvm ssh-cmd {name}   # ssh command");

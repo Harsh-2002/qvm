@@ -221,46 +221,45 @@ command functions. Every action a frontend takes is a call into
 `commands::*` — there is no parallel state, no duplicated logic.
 
 ```
-                          ┌──────────────────────────────────────────┐
-                          │                qvm  binary               │
-                          └──────────────────────────────────────────┘
-                                              │
-            ┌─────────────────────────────────┼─────────────────────────────────┐
-            ▼                                 ▼                                 ▼
-   ╭──────────────────╮              ╭──────────────────╮              ╭──────────────────╮
-   │       CLI        │              │       TUI        │              │   VNC  bridge    │
-   │                  │              │                  │              │                  │
-   │  scripting,      │              │  primary admin   │              │  qvm vnc         │
-   │  idempotent,     │              │  experience      │              │       --browser  │
-   │  cron / CI       │              │  (Proxmox-like)  │              │  · TUI  'b' key  │
-   ╰─────────┬────────╯              ╰─────────┬────────╯              ╰─────────┬────────╯
-             │                                 │                                 │
-             └─────────────────────────────────┼─────────────────────────────────┘
-                                               ▼
-                       ┌───────────────────────────────────────────────┐
-                       │             commands::*    (lib)              │
-                       │                                               │
-                       │   create  ·  delete  ·  lifecycle  ·  pull    │
-                       │   info    ·  resources  ·  vnc    ·  init     │
-                       └───────────────────────┬───────────────────────┘
-                                               ▼
-                       ┌───────────────────────────────────────────────┐
-                       │            libvirt::*   +   cmd::*            │
-                       │                                               │
-                       │   Every external interaction is a virsh /     │
-                       │   virt-install / qemu-img shell-out. No FFI,  │
-                       │   no bindings. Debug with strace, copy/paste  │
-                       │   the failing command into a shell.           │
-                       └───────────────────────┬───────────────────────┘
-                                               ▼
-                                    ╭───────────────────╮
-                                    │      libvirtd     │
-                                    │    (system svc)   │
-                                    ╰─────────┬─────────╯
-                                              ▼
-                                    ╭───────────────────╮
-                                    │     QEMU / KVM    │
-                                    ╰───────────────────╯
+                      ┌───────────────────────────────────────┐
+                      │              qvm  binary              │
+                      └───────────────────┬───────────────────┘
+                                          │
+              ┌───────────────────────────┼───────────────────────────┐
+              ▼                           ▼                           ▼
+    ╭───────────────────╮       ╭───────────────────╮       ╭───────────────────╮
+    │        CLI        │       │        TUI        │       │    VNC bridge     │
+    │                   │       │                   │       │                   │
+    │  scripting,       │       │  primary admin    │       │  qvm vnc          │
+    │  idempotent,      │       │  experience       │       │       --browser   │
+    │  cron / CI        │       │  Proxmox-style    │       │  · TUI 'b' key    │
+    ╰─────────┬─────────╯       ╰─────────┬─────────╯       ╰─────────┬─────────╯
+              │                           │                           │
+              └───────────────────────────┼───────────────────────────┘
+                                          ▼
+                      ┌───────────────────────────────────────┐
+                      │           commands::*   (lib)         │
+                      │                                       │
+                      │   create  ·  delete  ·  lifecycle     │
+                      │   pull    ·  info    ·  vnc  ·  init  │
+                      └───────────────────┬───────────────────┘
+                                          ▼
+                      ┌───────────────────────────────────────┐
+                      │         libvirt::*   +   cmd::*       │
+                      │                                       │
+                      │   Every external interaction is a     │
+                      │   virsh / virt-install / qemu-img     │
+                      │   shell-out. No FFI, no bindings.     │
+                      └───────────────────┬───────────────────┘
+                                          ▼
+                                ╭───────────────────╮
+                                │      libvirtd     │
+                                │   (system svc)    │
+                                ╰─────────┬─────────╯
+                                          ▼
+                                ╭───────────────────╮
+                                │     QEMU / KVM    │
+                                ╰───────────────────╯
 ```
 
 Critical rule: **the TUI and the VNC bridge call into `commands::*`
@@ -377,75 +376,75 @@ diagram form first then prose:
    $ qvm run web01 debian:13
               │
               ▼
-   ┌─────────────────────────────────────┐
-   │ clap parses Cmd::Create  → dispatch │
-   └─────────────────┬───────────────────┘
-                     │
-                     ▼
-   ┌─────────────────────────────────────┐                    error
-   │ libvirt::require_absent('web01')    │ ─── already exists ──────► exit 1
-   │ cmd::require('virt-install', ...)   │ ─── tool missing ────────► exit 1
-   └─────────────────┬───────────────────┘
-                     │ ok
-                     ▼
-   ┌─────────────────────────────────────┐
-   │ resolve params (defaults from cfg)  │
-   │   cpus = 2  ·  ram = 4G  ·  disk =  │
-   │   50G  ·  user = vmXXXXXX (random)  │
-   └─────────────────┬───────────────────┘
-                     │
-                     ▼
-   ┌─────────────────────────────────────┐    base missing    ╭─────────────────╮
-   │ cfg.image_path(distro) exists?      │ ─────────────────► │ pull::pull_one  │
-   │   /var/lib/qvm/images/debian-13.q…  │                    │ (wget atomic    │
-   └─────────────────┬───────────────────┘ ◄──────────────────│  .partial → mv) │
-                     │ yes                                    ╰─────────────────╯
-                     ▼
-   ┌─────────────────────────────────────┐
-   │ Seed::build  (cloud-init NoCloud)   │
-   │  · write_files()  → user-data,      │
-   │    meta-data, .vmuser sidecar       │
-   │  · build_iso()  → genisoimage       │
-   │    → /var/lib/qvm/cloudinit/web01.  │
-   │      iso                            │
-   └─────────────────┬───────────────────┘
-                     │
-                     ▼
-   ┌─────────────────────────────────────┐
-   │ qemu-img convert  -O qcow2          │   ← FULL COPY, no -b flag
-   │   <base>  /var/lib/qvm/vms/web01.q… │     (see § 2)
-   │ qemu-img resize -q  web01.qcow2 50G │
-   └─────────────────┬───────────────────┘
-                     │
-                     ▼
-   ┌─────────────────────────────────────┐
-   │ virt-install --import --noautoconsole│
-   │   --memory 4096 --vcpus 2           │
-   │   --cpu host-passthrough            │
-   │   --disk path=web01.qcow2,bus=virtio│
-   │   --disk path=web01.iso,device=cdrom│
-   │   --osinfo name=debian12,require=off│
-   │   --graphics vnc,listen=<bind>      │
-   │   --network bridge=<bridge>         │
-   │   --channel … qemu-guest-agent      │
-   └─────────────────┬───────────────────┘
-                     │
-                     ▼
-   ┌─────────────────────────────────────┐
-   │ if cfg.defaults.autostart:          │
-   │   virsh autostart web01             │
-   └─────────────────┬───────────────────┘
-                     │
-                     ▼
-   ┌─────────────────────────────────────┐
-   │ print summary  ·  qvm exits         │
-   │ libvirt now owns the VM             │
-   └─────────────────────────────────────┘
-                     │
-                     ▼
-            inside the guest, cloud-init's NoCloud datasource
-            scans for the CD-ROM, reads user-data, runs the
-            generic first-boot script (see § 7).
+   ┌────────────────────────────────────────┐
+   │ clap parses Cmd::Create → dispatch     │
+   └──────────────────┬─────────────────────┘
+                      │
+                      ▼
+   ┌────────────────────────────────────────┐                error
+   │ libvirt::require_absent('web01')       │ ── exists ──────► exit 1
+   │ cmd::require('virt-install', ...)      │ ── tool missing ► exit 1
+   └──────────────────┬─────────────────────┘
+                      │ ok
+                      ▼
+   ┌────────────────────────────────────────┐
+   │ resolve params (defaults from cfg)     │
+   │   cpus = 2 · ram = 4G · disk = 50G     │
+   │   user = vmXXXXXX (random)             │
+   └──────────────────┬─────────────────────┘
+                      │
+                      ▼
+   ┌────────────────────────────────────────┐                 ╭──────────────────╮
+   │ cfg.image_path(distro) exists?         │ ── missing ───► │ pull::pull_one   │
+   │   /var/lib/qvm/images/debian-13.qcow2  │                 │ wget atomic      │
+   └──────────────────┬─────────────────────┘ ◄────── ok ──── │ (.partial → mv)  │
+                      │ yes                                   ╰──────────────────╯
+                      ▼
+   ┌────────────────────────────────────────┐
+   │ Seed::build  (cloud-init NoCloud)      │
+   │   · write_files()  → user-data,        │
+   │     meta-data, .vmuser sidecar         │
+   │   · build_iso()  → genisoimage         │
+   │     → /var/lib/qvm/cloudinit/web01.iso │
+   └──────────────────┬─────────────────────┘
+                      │
+                      ▼
+   ┌────────────────────────────────────────┐
+   │ qemu-img convert -O qcow2              │   ← FULL COPY, no -b flag
+   │   <base>  →  /var/lib/qvm/vms/web01    │     (see § 2)
+   │ qemu-img resize -q  web01.qcow2 50G    │
+   └──────────────────┬─────────────────────┘
+                      │
+                      ▼
+   ┌────────────────────────────────────────┐
+   │ virt-install --import                  │
+   │   --memory 4096 --vcpus 2              │
+   │   --cpu host-passthrough               │
+   │   --disk path=web01.qcow2,bus=virtio   │
+   │   --disk path=web01.iso,device=cdrom   │
+   │   --osinfo name=debian12,require=off   │
+   │   --graphics vnc,listen=<bind>         │
+   │   --network bridge=<bridge>            │
+   │   --channel ... qemu-guest-agent       │
+   │   --noautoconsole                      │
+   └──────────────────┬─────────────────────┘
+                      │
+                      ▼
+   ┌────────────────────────────────────────┐
+   │ if cfg.defaults.autostart:             │
+   │   virsh autostart web01                │
+   └──────────────────┬─────────────────────┘
+                      │
+                      ▼
+   ┌────────────────────────────────────────┐
+   │ print summary · qvm exits              │
+   │ libvirt now owns the VM                │
+   └──────────────────┬─────────────────────┘
+                      │
+                      ▼
+        inside the guest, cloud-init's NoCloud datasource
+        scans for the CD-ROM, reads user-data, runs the
+        generic first-boot script (see § 7).
 ```
 
 Walking through the same flow:
@@ -707,42 +706,23 @@ It is a thin presenter — every action it takes delegates to one of the
 
 ### 9.1 Layout
 
-At ≥80 columns, the screen is:
+The TUI is built from four regions, laid out top-to-bottom:
 
-```
-  qvm 0.1.0  •  Aether  •  3 VMs · 1 running                  [?] help  [Tab] focus  [q] quit
- ╭─ VIRTUAL MACHINES ──────────╮ ╭─ web01 ────────────────────────────────────────────────────╮
- │                              │ │                                                            │
- │   ▶ ● web01                  │ │   ● RUNNING                                                │
- │       running · 10.0.0.42    │ │                                                            │
- │                              │ │   IP            10.0.0.42                                  │
- │     ● build                  │ │   Name          web01                                      │
- │       running · 10.0.0.51    │ │   State         running                                    │
- │                              │ │                                                            │
- │     ○ db01                   │ │   ─ DETAILS  ─                                             │
- │       stopped                │ │                                                            │
- │                              │ │   UUID          2de4c3ae-c2c5-4d2c-…                       │
- │   ─ ──────────────────────── │ │   OS Type       hvm                                        │
- │   +  create new VM   (c)     │ │   CPU(s)        2 vCPU                                     │
- │                              │ │   Max memory    4.00 GiB                                   │
- │                              │ │   Used memory   4.00 GiB                                   │
- │                              │ │                                                            │
- │                              │ │   Press [Shift+R] for raw  [Tab] focus                     │
- ╰──────────────────────────────╯ ╰────────────────────────────────────────────────────────────╯
-   ● Started 'web01'                                                                              ◄── toast (optional)
- ╭──────────────────────────────────────────────────────────────────────────────────────────────╮
- │   [s] Start   [t] Stop   [r] Restart   [e] Console   [b] Browser   [d] Delete   [c] Create   │
- │   [v] VNC info   [/] Filter   [o] Sort   [?] Help   [q] Quit                                 │
- ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
-```
+- **Header** (1 line): brand · hostname · VM summary · context hint.
+- **Body** (fills the middle): split horizontally on ≥80-col terminals
+  into a 28-col sidebar (VM list + filter + "+ create new VM") and a
+  content pane that renders different things per `Mode`. Narrower
+  terminals collapse to a single sidebar-only view.
+- **Toast** (1 line, only when active): the latest success/error
+  message, auto-dismissed after 5 s.
+- **Action bar** (bordered panel, 1-3 rows): labelled `[k] Label`
+  buttons. `fit_action_rows` greedily packs them onto as few rows as
+  fit the terminal width. Disabled buttons (e.g. Stop when nothing is
+  running) render faint. Buttons are clickable (see § 9.5 mouse).
 
-The action bar rows are computed at draw time — `fit_action_rows`
-greedily packs as many `[k] Label` buttons per row as fit the
-terminal width. Disabled buttons (e.g. Stop when nothing is running)
-render dim/faint.
-
-On terminals narrower than 80 cols, the sidebar takes the full body and
-the detail pane is hidden (degraded mode).
+`Tab` cycles `FocusPane::{Sidebar, Detail}`; the active pane gets a
+mauve border instead of the dim default. Render functions are pure
+(no I/O); all colours come from `src/tui/theme.rs`.
 
 ### 9.2 State machine
 
@@ -750,59 +730,27 @@ the detail pane is hidden (degraded mode).
 (triggered by keypresses) and in `App::refresh` (transitions to/from
 `EmptyState` when the row count crosses zero).
 
+The state machine is small (six modes) and best shown as a table:
+
 ```
-                              c
-                  ┌─────────────────────────┐
-                  │                         │
-                  │                         ▼
-       ╭────────────────────╮        ╭────────────────────╮
-       │     EmptyState     │        │     CreateForm     │
-       │  (no VMs visible)  │        │   inline form      │
-       ╰─────────┬──────────╯        ╰──────────┬─────────╯
-                 ▲                              │ Enter
-        refresh  │                              ▼  (suspend + commands::create::run)
-        returns  │                       ╭──────────────╮
-        rows ≥ 1 │                       │   suspended  │
-                 │                       ╰──────┬───────╯
-                 │  refresh                     │ result
-                 │  returns 0                   ▼
-                 │  rows                ╭────────────────╮
-                 │                      │     Detail     │  ◄────────────────────────┐
-                 └──────────────────────│   (default)    │                           │
-                                        ╰─────┬──────┬───╯                           │
-                                              │      │                               │
-                          ┌───────────────────┘      └────────────────────────┐      │
-                       d  │                                                  /│      │
-                          ▼                                                   ▼      │
-                 ╭────────────────────╮                          ╭────────────────╮ │
-                 │   ConfirmDelete    │                          │     Filter     │ │
-                 │  bottom-bar  +     │                          │  (text input   │ │
-                 │  centered modal    │                          │   in sidebar)  │ │
-                 ╰─────────┬──────────╯                          ╰────────┬───────╯ │
-                           │                                              │         │
-                           │ y → commands::delete::run                    │ Enter   │
-                           │ n / Esc                                      │ / Esc   │
-                           ▼                                              ▼         │
-                    Detail / EmptyState                            Detail (filtered) ┘
+  Mode              Entered by    How you leave it
+  ────────────────  ────────────  ──────────────────────────────────────────
+  Detail            (default)     q · Esc → quit
+  EmptyState        no VMs found  → Detail automatically when rows appear
+  CreateForm        c             Enter → commands::create::run, back to Detail
+                                  Esc   → back to Detail
+  ConfirmDelete     d             y → commands::delete::run, back to Detail
+                                  n · Esc → back to Detail
+  Filter            /             Enter (commit) · Esc (cancel) → Detail
+  Help              ?             any key → Detail
 
-                  ?
-                  ▼
-       ╭────────────────────╮
-       │        Help        │ ── any key ──► Detail
-       │  (full-pane help)  │
-       ╰────────────────────╯
+  Two actions don't change Mode — they suspend ratatui and exec a child
+  process, then restore the TUI on return:
 
-                  e
-                  ▼
-       ╭────────────────────╮      virsh console <name>
-       │  suspend ratatui   │ ────────────────────────────► (Ctrl-] returns) ─► Detail
-       ╰────────────────────╯
-
-                  b
-                  ▼
-       ╭────────────────────╮      websockify + noVNC + QR
-       │  suspend ratatui   │ ────────────────────────────► (Ctrl-C returns) ─► Detail
-       ╰────────────────────╯
+  Key   Action                              Returns when
+  ────  ──────────────────────────────────  ──────────────────────
+  e     virsh console <name>                Ctrl-] (virsh escape)
+  b     websockify + noVNC + URL + QR       Ctrl-C
 ```
 
 `Tab` cycles `FocusPane::{Sidebar, Detail}` independently of `Mode`.
@@ -901,77 +849,24 @@ three different audiences. The table:
 | Native VNC viewer (TUI `v`)         | Print connect info as a toast | You already have RealVNC / TigerVNC / Screen Sharing       |
 | `qvm vnc --browser` (TUI `b`)       | Spawn websockify + serve noVNC| You're on a phone, or you don't want to install a viewer  |
 
-The same paths as a flow:
+All three paths reach the same VM through different transports:
 
-```
-                                ╭──── qvm host ──────────────────────────────────╮
-                                │                                                │
-                                │              ╭──────────────╮                  │
-                                │              │     VM       │                  │
-                                │              │  (libvirt)   │                  │
-                                │              ╰──┬────────┬──╯                  │
-                                │     serial      │        │     VNC (5900+N)    │
-                                │     pty         │        │                     │
-                                │       ┌─────────┘        │                     │
-                                │       │                  │                     │
-                                │       ▼                  ▼                     │
-   user keystrokes              │  ┌─────────┐       ┌─────────────────┐         │
-   ──────────────────────────── │─▶│  virsh  │       │  qemu VNC server│         │
-                                │  │ console │       │                 │         │
-                                │  └────┬────┘       └────────┬────────┘         │
-                                │       │                     │                  │
-                                │       ▼                     │                  │
-                                │  cooked terminal            │                  │
-                                │  (TUI suspended;            │                  │
-                                │   Ctrl-] returns)           │                  │
-                                │                             │                  │
-                                │     [e]  Console            │                  │
-                                ╰─────────────────────────────│──────────────────╯
-                                                              │
-                              ┌───────────────────────────────┼──────────────────┐
-                              │                               │                  │
-                              ▼ [v] VNC info                  ▼ [b] Browser      │
-                                                                                 │
-       prints connect strings:                       qvm cmd::exec websockify    │
-                                                     listens 0.0.0.0:6080        │
-         vncviewer  host:0                                ▲                      │
-         vncviewer  host::5900                            │ ws upgrade            │
-         open vnc://host                                  │                      │
-                                                  ╭───────┴────────╮             │
-                                                  │     noVNC      │             │
-                                                  │  vnc_lite.html │             │
-                                                  ╰───────┬────────╯             │
-                                                          │ http                  │
-              (open in any native VNC viewer)             │                      │
-                                                          ▼                      │
-                                                ╭───────────────────╮            │
-                                                │ user opens URL    │            │
-                                                │ (or scans QR with │            │
-                                                │   their phone)    │            │
-                                                ╰───────────────────╯            │
-                                                                                 │
-                                                                          ───────┘
-```
+- **Serial console** (`e`) attaches a PTY to the guest's serial port
+  via `virsh console`. qvm suspends ratatui, the user interacts, Ctrl-]
+  detaches.
+- **Native VNC** (`v`) reads `cfg.vnc.bind` + `virsh vncdisplay <name>`
+  and prints `host:display`, `host::port`, and `vnc://host` strings —
+  the user runs their own viewer.
+- **Browser bridge** (`b`, or `qvm vnc --browser`) `cmd::exec`s
+  `websockify` to bridge a WebSocket→TCP between `0.0.0.0:6080` and
+  the VM's VNC port. websockify's `--web` flag serves the
+  system-installed noVNC bundle so the user just opens an HTTP URL.
+  An ASCII QR of the URL is printed alongside.
 
-A few important details about each:
+Read the table at the top of this section to decide which one fits
+your situation.
 
 ### 10.1 The serial console path (`e`)
-
-```
-$ qvm  (TUI)
-[press 'e' on a running VM]
-
-  TUI suspends ratatui     →   stdin/stdout/stderr restored to the cooked terminal
-                                      ▼
-                                virsh console <name>
-                                      ▼
-                                ──────── (interactive) ────────
-                                user types, sees the serial console
-                                      ▼
-                                Ctrl-]  →  virsh exits
-                                      ▼
-  TUI restores  ←  ratatui re-grabs the terminal
-```
 
 The trick that took two iterations to get right: `cmd::run_inherit`
 nulls stdin (correct for batch programs like wget and qemu-img).

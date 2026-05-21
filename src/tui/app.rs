@@ -102,7 +102,7 @@ pub struct App {
 
 #[derive(Debug, Clone, Default)]
 pub struct CreateForm {
-    pub field:       usize, // 0..=5
+    pub field:       usize, // 0..=6
     pub name:        TextInput,
     pub distro_idx:  usize, // index into available distros
     pub distros:     Vec<String>,
@@ -111,6 +111,7 @@ pub struct CreateForm {
     pub memory_gb:   TextInput,
     pub disk_gb:     TextInput,
     pub user:        TextInput,
+    pub password:    TextInput,
 }
 
 impl App {
@@ -314,8 +315,8 @@ impl App {
             Action::Restart       => self.act_lifecycle("restart", libvirt::reboot),
             Action::ConfirmDelete => self.act_delete(cfg),
             // Create-form interactions.
-            Action::CreateNext    => self.create.field = (self.create.field + 1) % 6,
-            Action::CreatePrev    => self.create.field = (self.create.field + 5) % 6,
+            Action::CreateNext    => self.create.field = (self.create.field + 1) % 7,
+            Action::CreatePrev    => self.create.field = (self.create.field + 6) % 7,
             Action::CreateInsert(c) => self.create_insert(c),
             Action::CreateBackspace => self.create_focused_mut(|f| f.backspace()),
             Action::CreateDelete    => self.create_focused_mut(|f| f.delete()),
@@ -434,6 +435,7 @@ impl App {
             3 => f(&mut self.create.memory_gb),
             4 => f(&mut self.create.disk_gb),
             5 => f(&mut self.create.user),
+            6 => f(&mut self.create.password),
             _ => {}
         }
     }
@@ -480,12 +482,22 @@ impl App {
             if n == 0 { return Err(format!("{what} must be > 0")); }
             Ok(n)
         };
-        let cpus      = parse_pos(&self.create.cpus, "vCPUs")?;
+        let cpus      = parse_pos(&self.create.cpus, "CPUs")?;
         let memory_gb = parse_pos(&self.create.memory_gb, "RAM (GB)")?;
         let disk_gb   = parse_pos(&self.create.disk_gb, "Disk (GB)")?;
         let user = {
             let s = self.create.user.value.trim();
-            if s.is_empty() { None } else { Some(s.to_string()) }
+            if s.is_empty() {
+                return Err("login user required (no default)".into());
+            }
+            s.to_string()
+        };
+        let password = {
+            let s = self.create.password.value.trim();
+            if s.is_empty() {
+                return Err("password required (no default)".into());
+            }
+            s.to_string()
         };
         self.close_to_detail();
         Ok(crate::commands::create::Args {
@@ -494,8 +506,8 @@ impl App {
             cpus: Some(cpus),
             memory_gb: Some(memory_gb),
             disk_gb: Some(disk_gb),
-            user,
-            password: None,
+            user: Some(user),
+            password: Some(password),
             no_autostart: false,
         })
     }

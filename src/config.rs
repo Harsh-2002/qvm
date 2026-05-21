@@ -43,8 +43,6 @@ pub struct Defaults {
     pub disk_gb: u32,
     pub autostart: bool,
     pub grub_timeout: Option<u32>,
-    /// Fallback SHA-512 crypt hash if no password is given.
-    pub password_hash: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -90,6 +88,8 @@ impl Default for Network {
 
 impl Default for Defaults {
     fn default() -> Self {
+        // Numeric defaults are fine. Username + password are intentionally
+        // NOT defaulted anywhere — every `qvm run` requires `-u` and `-p`.
         Self {
             distro: "debian:13".into(),
             cpus: 2,
@@ -97,9 +97,6 @@ impl Default for Defaults {
             disk_gb: 50,
             autostart: true,
             grub_timeout: Some(0),
-            // SHA-512 crypt of "changeme" - users SHOULD override this in config
-            // or always pass -p on the command line.
-            password_hash: "$6$rounds=5000$qvmdefault$3qWlqQGJqB8ZQGqI7e9PJzPe7RoXLnQNN/9rb4ZG3D4z7y7TWqVx7yEqDfA0EHcM3aNl0wnHkE5wL5y9oF3kZ.".into(),
         }
     }
 }

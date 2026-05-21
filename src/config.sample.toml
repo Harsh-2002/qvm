@@ -17,10 +17,8 @@ disk_gb      = 50
 autostart    = true                    # virsh autostart on host boot
 grub_timeout = 0                       # instant boot; comment out to keep distro default
 
-# Fallback password hash if -p is not given. Generate one with:
-#   mkpasswd --method=SHA-512   (apt install whois)
-#   openssl passwd -6
-password_hash = "$6$rounds=5000$qvmdefault$3qWlqQGJqB8ZQGqI7e9PJzPe7RoXLnQNN/9rb4ZG3D4z7y7TWqVx7yEqDfA0EHcM3aNl0wnHkE5wL5y9oF3kZ."
+# Username + password are required at create time and have no default —
+# pass them every time via -u/-p on the CLI or in the TUI Create form.
 
 [vnc]
 bind = "127.0.0.1"                     # "0.0.0.0" to expose on LAN (no auth by default)

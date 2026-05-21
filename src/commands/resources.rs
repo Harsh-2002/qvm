@@ -9,11 +9,11 @@ use std::time::Duration;
 
 pub fn set_cpu(name: &str, n: u32) -> Result<()> {
     libvirt::require_defined(name)?;
-    if n == 0 { return Err(Error::User("vcpus must be > 0".into())); }
+    if n == 0 { return Err(Error::User("CPUs must be > 0".into())); }
     let ns = n.to_string();
     run("virsh", ["setvcpus", name, &ns, "--config", "--maximum"])?;
     run("virsh", ["setvcpus", name, &ns, "--config"])?;
-    println!("vCPUs for '{name}' set to {n}. Reboot to apply.");
+    println!("CPUs for '{name}' set to {n}. Reboot to apply.");
     Ok(())
 }
 
