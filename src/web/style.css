@@ -121,8 +121,10 @@ footer {
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: var(--gap);
+  /* Cap maximum width so cards don't spread infinitely on 4K monitors. */
+  max-width: 1280px;
 }
 
 .card {
@@ -146,7 +148,9 @@ footer {
   font-weight: 600;
   font-size: 1.05rem;
   word-break: break-all;
+  color: var(--text);
 }
+.card .name:hover { color: var(--accent); text-decoration: none; }
 
 .badge {
   display: inline-block;
@@ -233,6 +237,63 @@ pre.dominfo {
   color: var(--text);
 }
 
+/* --- key/value table (inspect) ----------------------------------------- */
+
+table.kv {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 720px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+table.kv th,
+table.kv td {
+  padding: 0.55rem 1rem;
+  text-align: left;
+  font-weight: 400;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+table.kv tr:last-child th,
+table.kv tr:last-child td { border-bottom: 0; }
+table.kv th {
+  color: var(--muted);
+  font-size: 0.85rem;
+  width: 32%;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+table.kv td {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  word-break: break-all;
+}
+
+details summary { padding: 0.25rem 0; }
+
+.inline { display: inline; }
+
+.form-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.title { margin: 0; font-size: 1.4rem; }
+
+kbd {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+}
+
 /* --- console ----------------------------------------------------------- */
 
 .console-frame {
@@ -245,6 +306,14 @@ pre.dominfo {
 
 /* --- toast ------------------------------------------------------------- */
 
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes toast-out {
+  from { opacity: 1; }
+  to   { opacity: 0; transform: translateY(8px); pointer-events: none; }
+}
 .toast {
   position: fixed;
   bottom: 1rem;
@@ -256,9 +325,75 @@ pre.dominfo {
   border-radius: var(--radius);
   z-index: 50;
   box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  animation: toast-in 0.15s ease-out;
 }
 .toast.err { border-color: var(--err); color: #fecaca; }
 .toast.ok  { border-color: var(--ok);  }
+.toast.dismissing { animation: toast-out 0.2s ease-out forwards; }
+
+/* --- overlay (long-running ops) --------------------------------------- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: toast-in 0.15s ease-out;
+}
+.overlay-inner {
+  text-align: center;
+  max-width: 480px;
+  padding: 2rem;
+}
+.overlay-title {
+  font-size: 1.2rem;
+  margin: 1rem 0 0.5rem;
+  font-weight: 600;
+}
+.overlay-msg {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+.spinner {
+  width: 48px;
+  height: 48px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  margin: 0 auto;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* --- help modal (keyboard shortcuts) --------------------------------- */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 90;
+  animation: toast-in 0.15s ease-out;
+}
+.modal-inner {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  max-width: 480px;
+  width: 90vw;
+}
+.modal-inner h2 { margin-top: 0; font-size: 1.1rem; }
+.modal-inner table { width: 100%; }
+.modal-inner td { padding: 0.3rem 0; }
+.modal-inner td:first-child { width: 30%; }
 
 /* --- mobile tweaks ----------------------------------------------------- */
 

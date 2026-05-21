@@ -29,6 +29,55 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tiny_http::{Header, Method, Request, Response, Server};
 
+// ── flash messages ───────────────────────────────────────────────────────────
+//
+// We need to communicate "Started 'web01'" or "delete failed: …" across a
+// POST→303→GET redirect. The classic web pattern is a flash cookie: set on
+// the redirect response, read+cleared on the next render. Keeps URLs clean
+// and doesn't require client-side state.
+
+/// Two-tuple level + message. Level is "ok" or "err".
+type Flash = (String, String);
+
+fn read_flash(req: &Request) -> Option<Flash> {
+    for h in req.headers() {
+        if !h.field.equiv("cookie") { continue; }
+        for kv in h.value.as_str().split(';') {
+            let kv = kv.trim();
+            if let Some(v) = kv.strip_prefix("qvm_flash=") {
+                let dec = url_decode(v);
+                if let Some(i) = dec.find(':') {
+                    return Some((dec[..i].to_string(), dec[i+1..].to_string()));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn flash_set_header(level: &str, msg: &str) -> Header {
+    let value = format!("{}:{}", level, url_encode(msg));
+    let cookie = format!("qvm_flash={}; Path=/; Max-Age=15; HttpOnly; SameSite=Lax", value);
+    Header::from_bytes("Set-Cookie", cookie).unwrap()
+}
+
+fn flash_clear_header() -> Header {
+    Header::from_bytes("Set-Cookie", "qvm_flash=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax").unwrap()
+}
+
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
 /// Per-VM websockify session: which TCP port the bridge listens on, and the
 /// child handle so we can kill it on shutdown.
 struct WsSession {
@@ -186,10 +235,11 @@ fn split_vm_path(p: &str) -> VmPath {
 fn index(req: Request, _state: &State, query: &str) -> Result<()> {
     let rows = list_vms();
     if query.contains("fragment=grid") {
-        respond_html(req, 200, templates::grid_only(&rows))
-    } else {
-        respond_html(req, 200, templates::home_page(&rows))
+        // Fragment endpoint for the 2s auto-refresh — no toast, no shell.
+        return respond_html(req, 200, templates::grid_only(&rows));
     }
+    let flash = read_flash(&req);
+    respond_html_with_flash(req, 200, templates::home_page(&rows, flash.as_ref()), flash.is_some())
 }
 
 fn list_vms() -> Vec<VmRow> {
@@ -224,7 +274,7 @@ fn create_vm(mut req: Request, state: &State) -> Result<()> {
     };
 
     match commands::create::run(&state.cfg, args) {
-        Ok(()) => redirect(req, "/"),
+        Ok(()) => redirect_with_flash(req, "/", "ok", &format!("Created '{name}'")),
         Err(e) => respond_html(req, 400, templates::create_form(&state.cfg, Some(&e.to_string()))),
     }
 }
@@ -245,15 +295,17 @@ fn delete(req: Request, state: &State, name: &str) -> Result<()> {
         map.remove(name);
     }
     match commands::delete::run(&state.cfg, name, /* force */ true) {
-        Ok(()) => redirect(req, "/"),
-        Err(e) => respond_html(req, 500, templates::error_page(500, &e.to_string())),
+        Ok(()) => redirect_with_flash(req, "/", "ok",  &format!("Deleted '{name}'")),
+        Err(e) => redirect_with_flash(req, "/", "err", &format!("delete '{name}' failed: {e}")),
     }
 }
 
 fn act(req: Request, name: &str, f: fn(&str) -> Result<()>) -> Result<()> {
     if !crate::util::valid_vm_name(name) { return not_found(req); }
-    let _ = f(name); // surface errors via the toast on next refresh; not critical
-    redirect(req, "/")
+    match f(name) {
+        Ok(()) => redirect_with_flash(req, "/", "ok",  &format!("Action sent to '{name}'")),
+        Err(e) => redirect_with_flash(req, "/", "err", &format!("action on '{name}' failed: {e}")),
+    }
 }
 
 fn console(req: Request, state: &State, name: &str) -> Result<()> {
@@ -378,10 +430,17 @@ fn req_host(req: &Request) -> Option<String> {
 }
 
 fn respond_html(req: Request, status: u16, body: String) -> Result<()> {
+    respond_html_with_flash(req, status, body, false)
+}
+
+/// Render an HTML response. When `clear_flash` is true, also instruct the
+/// browser to drop the qvm_flash cookie (we just rendered its content).
+fn respond_html_with_flash(req: Request, status: u16, body: String, clear: bool) -> Result<()> {
     let mut resp = Response::from_string(body)
         .with_status_code(status as u32);
     resp.add_header(Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap());
     resp.add_header(Header::from_bytes("Cache-Control", "no-store").unwrap());
+    if clear { resp.add_header(flash_clear_header()); }
     req.respond(resp).ok();
     Ok(())
 }
@@ -394,10 +453,11 @@ fn serve_static(req: Request, ctype: &str, body: &'static [u8]) -> Result<()> {
     Ok(())
 }
 
-fn redirect(req: Request, target: &str) -> Result<()> {
+fn redirect_with_flash(req: Request, target: &str, level: &str, msg: &str) -> Result<()> {
     let mut resp = Response::from_string("")
         .with_status_code(303);
     resp.add_header(Header::from_bytes("Location", target).unwrap());
+    resp.add_header(flash_set_header(level, msg));
     req.respond(resp).ok();
     Ok(())
 }
