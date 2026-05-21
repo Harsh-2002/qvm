@@ -37,17 +37,22 @@ Run `sudo qvm doctor` to check everything at once.
 
 ## Install
 
+### One-liner (recommended)
+
+Downloads the latest static binary from CI, installs it to `/usr/local/bin`, and sets up shell completions automatically:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Harsh-2002/qvm/main/install.sh | sudo sh
+```
+
+Supports bash, zsh, and fish completions. Requires `curl` and `unzip`.
+
+### From source
+
 ```bash
 git clone https://github.com/Harsh-2002/qvm && cd qvm
 cargo build --release
 sudo install -m 0755 target/release/qvm /usr/local/bin/qvm
-```
-
-Or grab the static binary from [CI artifacts](.github/workflows/build.yml):
-
-```bash
-# The workflow produces qvm-linux-amd64-static on every push.
-sudo install -m 0755 qvm-linux-amd64-static /usr/local/bin/qvm
 ```
 
 ### Static build (portable, no glibc dependency)
