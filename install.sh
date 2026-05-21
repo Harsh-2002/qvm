@@ -1,11 +1,13 @@
 #!/bin/sh
 # install.sh — install or update qvm.
 #
+# POSIX shell. No bashisms. Verify with `shellcheck -s sh install.sh`.
+#
 # Four jobs, nothing more:
 #   1. Install or update /usr/local/bin/qvm from the latest CI artifact.
 #   2. Ensure host dependencies are present (via `qvm doctor --install`).
 #   3. Detect the user's shell and drop in completions.
-#   4. Source-reload the completions so they're live immediately.
+#   4. Print the source-reload command so completions are live immediately.
 #
 # Output is minimal on purpose. Configuration is NOT this script's job —
 # run `sudo qvm` after install for the interactive onboarding wizard.

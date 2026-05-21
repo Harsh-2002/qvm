@@ -366,16 +366,12 @@ fn handle_key(
             _ => {}
         },
         StepKind::FirstImage => match k.code {
-            KeyCode::Down | KeyCode::Char('j') => {
-                if !app.distro_choices.is_empty() {
-                    app.distro_sel = (app.distro_sel + 1) % app.distro_choices.len();
-                }
+            KeyCode::Down | KeyCode::Char('j') if !app.distro_choices.is_empty() => {
+                app.distro_sel = (app.distro_sel + 1) % app.distro_choices.len();
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if !app.distro_choices.is_empty() {
-                    let n = app.distro_choices.len();
-                    app.distro_sel = (app.distro_sel + n - 1) % n;
-                }
+            KeyCode::Up | KeyCode::Char('k') if !app.distro_choices.is_empty() => {
+                let n = app.distro_choices.len();
+                app.distro_sel = (app.distro_sel + n - 1) % n;
             }
             KeyCode::Char(' ') => { app.skip_first_pull = !app.skip_first_pull; }
             KeyCode::Enter => {
