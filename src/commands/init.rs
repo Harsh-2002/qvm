@@ -7,16 +7,18 @@ use std::io::{self, Write};
 use std::path::Path;
 
 pub fn run(config_path: &Path, pull_all: bool, yes: bool) -> Result<()> {
-    if !config_path.exists() {
+    let wizard_wants_images = if !config_path.exists() {
         if yes {
             write_defaults(config_path)?;
+            false
         } else {
-            run_wizard(config_path)?;
+            run_wizard(config_path)?
         }
     } else {
         println!("Config already exists at {} (leaving it alone).", config_path.display());
         println!("Edit it directly, or delete it and re-run `qvm init` to re-run setup.");
-    }
+        false
+    };
 
     let cfg = Config::load(Some(config_path))?;
     cfg.ensure_dirs()?;
@@ -26,7 +28,7 @@ pub fn run(config_path: &Path, pull_all: bool, yes: bool) -> Result<()> {
     println!("  vms       {}", cfg.paths.vms.display());
     println!("  cloudinit {}", cfg.paths.cloudinit.display());
 
-    if pull_all {
+    if pull_all || wizard_wants_images {
         pull_all_images(&cfg)?;
     } else {
         println!();
@@ -76,7 +78,8 @@ fn pull_all_images(cfg: &Config) -> Result<()> {
 
 // ── wizard ────────────────────────────────────────────────────────────────────
 
-fn run_wizard(config_path: &Path) -> Result<()> {
+/// Returns true when the user opted to download the base images now.
+fn run_wizard(config_path: &Path) -> Result<bool> {
     println!();
     println!("╔══════════════════════════════════════════════════╗");
     println!("║          qvm  —  first-time setup                ║");
@@ -149,8 +152,13 @@ fn run_wizard(config_path: &Path) -> Result<()> {
 
     println!();
     println!("Config written to {}", config_path.display());
-    println!("Edit it any time — run `qvm init --pull-all` to download images.");
-    Ok(())
+
+    println!();
+    println!("── Base images ──────────────────────────────────────");
+    println!("  The 5 built-in distro images total ~2 GB. You can also pull");
+    println!("  them later with `qvm pull <distro>` or `qvm init --pull-all`.");
+    let want_images = prompt_bool("Download all 5 base images now?", false);
+    Ok(want_images)
 }
 
 struct WizardAnswers<'a> {
