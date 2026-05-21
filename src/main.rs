@@ -86,10 +86,14 @@ enum Cmd {
     /// Print a ready-to-use ssh command.
     SshCmd  { name: String },
 
-    /// Print VNC connection info (and optionally open a viewer).
+    /// Print VNC connection info (and optionally open a viewer or browser bridge).
     Vnc {
         name: String,
+        /// Try to launch a local VNC viewer (remote-viewer, vncviewer, ...).
         #[arg(long)] open: bool,
+        /// Spawn a noVNC websocket bridge on port 6080 and print a browser URL.
+        /// Requires `websockify` and `novnc` to be installed.
+        #[arg(short = 'b', long)] browser: bool,
     },
 
     /// List configured distros.
@@ -185,7 +189,7 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
         Cmd::Ip      { name }     => commands::info::ip(name),
         Cmd::SshCmd  { name }     => commands::info::ssh_cmd(&cfg, name),
 
-        Cmd::Vnc { name, open }   => commands::vnc::run(&cfg, name, *open),
+        Cmd::Vnc { name, open, browser } => commands::vnc::run(&cfg, name, *open, *browser),
 
         Cmd::Distros              => commands::images::distros(&cfg),
         Cmd::Images               => commands::images::images(&cfg),

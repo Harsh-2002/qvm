@@ -28,6 +28,20 @@ fn default_seed<'a>(name: &'a str, user: &'a str, shell: &'a str, keys: &'a [Str
 }
 
 #[test]
+fn firstboot_sets_native_framebuffer_resolution() {
+    // The cloud-init first-boot script must add `video=1920x1080@60` to the
+    // kernel cmdline so the framebuffer console renders crisply over VNC
+    // instead of the legacy 720x400 text mode.
+    let keys: Vec<String> = vec![];
+    let s = default_seed("web01", "joe", "/bin/bash", &keys);
+    let ud = user_data(&s);
+    assert!(
+        ud.contains("video=1920x1080@60"),
+        "user-data should include the video= kernel cmdline; got:\n{ud}"
+    );
+}
+
+#[test]
 fn user_data_starts_with_cloud_config_marker() {
     let keys = vec!["ssh-ed25519 AAAA test".to_string()];
     let s = default_seed("web01", "dev", "/bin/bash", &keys);

@@ -1,14 +1,26 @@
-use crate::cmd::{have, run as cmd_run};
+use crate::cmd::{exec, have, require, run as cmd_run};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::libvirt::{self, VncEndpoint};
+use std::path::Path;
 use std::process::Command;
 
-pub fn run(cfg: &Config, name: &str, open: bool) -> Result<()> {
+const DEFAULT_WS_PORT: u16 = 6080;
+const NOVNC_DIRS: &[&str] = &[
+    "/usr/share/novnc",          // Debian, Ubuntu
+    "/usr/share/webapps/novnc",  // Alpine
+    "/usr/share/noVNC",          // Fedora, Rocky
+];
+
+pub fn run(cfg: &Config, name: &str, open: bool, browser: bool) -> Result<()> {
     libvirt::require_running(name)?;
     let ep = libvirt::vnc_endpoint(name).ok_or_else(||
         Error::User(format!("'{name}' has no VNC display configured.")))?;
     let bind = &cfg.vnc.bind;
+
+    if browser {
+        return run_browser(name, bind, ep);
+    }
 
     print_info(name, bind, ep);
 
@@ -29,6 +41,44 @@ pub fn run(cfg: &Config, name: &str, open: bool) -> Result<()> {
         eprintln!("(no local viewer found — copy a command above to your laptop)");
     }
     Ok(())
+}
+
+/// Spin up a noVNC websocket bridge in the foreground and print a URL the
+/// user can open in any browser on the LAN. Ctrl-C tears the bridge down.
+fn run_browser(name: &str, bind: &str, ep: VncEndpoint) -> Result<()> {
+    require("websockify")?;
+    let novnc = NOVNC_DIRS.iter()
+        .find(|p| Path::new(p).join("vnc_lite.html").exists())
+        .copied()
+        .ok_or_else(|| Error::User(
+            "noVNC not installed. Try: apt-get install novnc  (or your distro's equivalent)".into()
+        ))?;
+
+    let dial = if bind == "0.0.0.0" { "127.0.0.1" } else { bind };
+    let host_ip = detect_host_ip().unwrap_or_else(|| "<this-host>".into());
+
+    println!("Browser VNC for '{name}':");
+    println!("  Open in any browser on this LAN:");
+    println!("    http://{host_ip}:{DEFAULT_WS_PORT}/vnc_lite.html?host={host_ip}&port={DEFAULT_WS_PORT}&autoconnect=true&resize=scale&reconnect=true");
+    println!();
+    println!("Press Ctrl-C to stop the bridge.");
+    println!();
+
+    // exec replaces qvm with websockify; on Ctrl-C the shell gets SIGINT
+    // and websockify exits cleanly. exec only returns on error.
+    exec("websockify", [
+        "--web", novnc,
+        &format!("0.0.0.0:{DEFAULT_WS_PORT}"),
+        &format!("{dial}:{}", ep.port),
+    ])
+}
+
+/// Best-effort: first non-loopback IPv4 from `hostname -I`.
+fn detect_host_ip() -> Option<String> {
+    let out = cmd_run("hostname", ["-I"]).ok()?;
+    out.split_whitespace()
+        .find(|s| !s.starts_with("127.") && s.contains('.'))
+        .map(str::to_string)
 }
 
 fn print_info(name: &str, bind: &str, ep: VncEndpoint) {
