@@ -11,7 +11,6 @@ use crate::tui::events::Action;
 use crate::tui::forms::TextInput;
 use crate::tui::theme::Theme;
 use crate::util;
-use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
 
 /// Which pane the keyboard is currently driving. Tab cycles.
@@ -93,11 +92,6 @@ pub struct App {
     /// Optimistic state shown next to a row until the next refresh resolves it.
     /// `(vm_name, displayed_state)` — e.g. `("web01", "starting…")`.
     pub pending: Option<(String, &'static str)>,
-    /// Mouse hit-test targets — rebuilt every render.
-    /// `(area, visible_index)` for sidebar VM rows.
-    pub sidebar_hits: Vec<(Rect, usize)>,
-    /// `(area, hotkey_char)` for action-bar buttons.
-    pub action_hits: Vec<(Rect, char)>,
     /// Count of files on disk with no matching libvirt domain. Computed
     /// once at TUI startup. Non-zero values render a hint in the header
     /// pointing at `qvm cleanup`.
@@ -142,8 +136,6 @@ impl App {
             focused: FocusPane::Sidebar,
             is_refreshing: false,
             pending: None,
-            sidebar_hits: Vec::new(),
-            action_hits: Vec::new(),
             orphan_count: 0,
         }
     }
@@ -294,9 +286,6 @@ impl App {
         match action {
             Action::Quit          => self.should_quit = true,
             Action::CycleFocus    => { self.focused = self.focused.next(); }
-            Action::SelectIndex(i) => {
-                if i < self.visible_count() { self.selected = i; self.detail_scroll = 0; }
-            }
             Action::ToggleRaw     => { self.show_raw_dominfo = !self.show_raw_dominfo; self.detail_scroll = 0; }
             Action::Down          => { self.move_selection(1); self.detail_scroll = 0; }
             Action::Up            => { self.move_selection(-1); self.detail_scroll = 0; }

@@ -5,6 +5,12 @@
 //! the CLI — every action you can take in the TUI corresponds to a CLI
 //! command you could have typed.
 //!
+//! **Keyboard only.** Mouse capture was removed because crossterm's mouse
+//! escape sequences leak into the parent shell on any abnormal exit (SIGINT
+//! during a child suspend(), panic during render, kernel kill, etc.). The
+//! result was a shell prompt spewing `^[[<35;X;YM` on every mouse move.
+//! Keyboard navigation covers everything mouse did; the trade is fine.
+//!
 //! Architectural rule: **this file is the only one that touches raw mode**.
 //! `app.rs`, `ui.rs`, `events.rs`, `forms.rs` are pure logic / pure render
 //! and have no terminal side-effects, so they unit-test cleanly.
@@ -22,7 +28,7 @@ use crate::config::Config;
 use crate::error::Result;
 use crossterm::{
     cursor::{Hide, Show},
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, MouseButton, MouseEventKind},
+    event::{self, Event},
     execute,
     terminal::{
         disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -42,26 +48,22 @@ pub use app::{App, Mode};
 /// propagates).
 pub fn run(cfg: &Config) -> Result<()> {
     // Panic hook: any panic during render would leave the user in raw mode
-    // with their cursor hidden AND mouse capture on (which spams escape
-    // sequences at the next shell prompt whenever the mouse moves).
-    // ALL three must be undone, in roughly reverse-enable order. These
-    // are idempotent — calling them when never enabled is a no-op.
+    // with their cursor hidden. Both must be undone in reverse-enable order.
+    // Idempotent — calling them when never enabled is a no-op.
     let original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(stdout(), DisableMouseCapture);
         let _ = disable_raw_mode();
         let _ = execute!(stdout(), LeaveAlternateScreen, Show);
         original(info);
     }));
 
     enable_raw_mode().map_err(io_err)?;
-    execute!(stdout(), EnterAlternateScreen, Hide, EnableMouseCapture).map_err(io_err)?;
+    execute!(stdout(), EnterAlternateScreen, Hide).map_err(io_err)?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout())).map_err(io_err)?;
     let result = main_loop(&mut terminal, cfg);
 
     // Always restore the terminal, even on error.
-    let _ = execute!(stdout(), DisableMouseCapture);
     let _ = disable_raw_mode();
     let _ = execute!(stdout(), LeaveAlternateScreen, Show);
 
@@ -102,19 +104,12 @@ fn main_loop(
         }
 
         if event::poll(Duration::from_millis(100)).map_err(io_err)? {
-            let ev = event::read().map_err(io_err)?;
-            match ev {
-                Event::Key(k) => {
-                    let action = events::map_key(&app, k);
-                    handle_action(&mut app, action, cfg, terminal)?;
-                }
-                Event::Mouse(m) => {
-                    if let Some(action) = mouse_to_action(&app, &m) {
-                        handle_action(&mut app, action, cfg, terminal)?;
-                    }
-                }
-                _ => {}
+            if let Event::Key(k) = event::read().map_err(io_err)? {
+                let action = events::map_key(&app, k);
+                handle_action(&mut app, action, cfg, terminal)?;
             }
+            // Non-key events (resize, paste, focus) are intentionally
+            // ignored. Mouse events can't reach us — capture is disabled.
         }
 
         // Keep the worker's "current selection" in sync. Cheap: short lock,
@@ -127,62 +122,6 @@ fn main_loop(
         }
     }
     Ok(())
-}
-
-fn mouse_to_action(app: &app::App, m: &crossterm::event::MouseEvent) -> Option<events::Action> {
-    use events::Action;
-    match m.kind {
-        MouseEventKind::ScrollUp   => Some(Action::ScrollDetailUp),
-        MouseEventKind::ScrollDown => Some(Action::ScrollDetailDown),
-        MouseEventKind::Down(MouseButton::Left) => {
-            let (col, row) = (m.column, m.row);
-            // Sidebar click → select VM by index.
-            for (rect, idx) in &app.sidebar_hits {
-                if hit(rect, col, row) {
-                    // Synthesize a Down/Up sequence to reach `idx` from current
-                    // selection. Simplest: emit a generic "go to row N" by
-                    // computing delta and dispatching multiple moves. To keep
-                    // things simple, only emit one Down/Up per click — clicking
-                    // again moves more. Better: a real SelectIndex action.
-                    return Some(Action::SelectIndex(*idx));
-                }
-            }
-            // Action-bar button click → simulate the key.
-            for (rect, key) in &app.action_hits {
-                if hit(rect, col, row) {
-                    return key_char_to_action(*key, &app.mode);
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn hit(r: &ratatui::layout::Rect, col: u16, row: u16) -> bool {
-    col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
-}
-
-fn key_char_to_action(key: char, mode: &app::Mode) -> Option<events::Action> {
-    use events::Action;
-    use app::Mode;
-    Some(match (key, mode) {
-        ('s', _) => Action::Start,
-        ('t', _) => Action::Stop,
-        ('r', _) => Action::Restart,
-        ('e', _) => Action::Console,
-        ('b', _) => Action::Browser,
-        ('d', _) => Action::OpenDelete,
-        ('c', _) => Action::OpenCreate,
-        ('v', _) => Action::ShowVnc,
-        ('/', _) => Action::OpenFilter,
-        ('o', _) => Action::CycleSort,
-        ('?', _) => Action::OpenHelp,
-        ('q', _) => Action::Quit,
-        ('y', Mode::ConfirmDelete) => Action::ConfirmDelete,
-        ('n', Mode::ConfirmDelete) => Action::CloseToDetail,
-        _ => return None,
-    })
 }
 
 /// Dispatch an action returned from key mapping. Most actions are state-only
@@ -250,14 +189,6 @@ fn handle_action(
 /// Release the terminal so a child process (virsh console, qemu-img convert,
 /// websockify, ssh) can render normally with progress bars, then restore
 /// the TUI on return.
-///
-/// **Disabling mouse capture FIRST is load-bearing.** If the child gets
-/// Ctrl-C'd, SIGINT propagates to qvm (because raw mode is off during
-/// suspend, so Ctrl-C is a real signal). qvm dies without running the
-/// shutdown path — but at least mouse capture is already off, so the
-/// shell prompt isn't left spewing `^[[<35;X;YM` for every mouse move.
-/// Discovered in production: `qvm vnc --browser` Ctrl-C'd by user, then
-/// the shell prompt is unusable until they run `reset`.
 fn suspend<F, R>(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     f: F,
@@ -265,12 +196,11 @@ fn suspend<F, R>(
 where
     F: FnOnce() -> R,
 {
-    let _ = execute!(stdout(), DisableMouseCapture);
     let _ = disable_raw_mode();
     let _ = execute!(stdout(), LeaveAlternateScreen, Show);
     let r = f();
     let _ = enable_raw_mode();
-    let _ = execute!(stdout(), EnterAlternateScreen, Hide, EnableMouseCapture);
+    let _ = execute!(stdout(), EnterAlternateScreen, Hide);
     let _ = terminal.clear();
     r
 }

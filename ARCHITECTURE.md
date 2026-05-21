@@ -58,9 +58,11 @@ with all of them.
   mobile scanning)
 - Resource changes: CPU, RAM, disk grow
 - Interactive TUI (`qvm` with no subcommand) — Proxmox-style sidebar
-  + content pane, theming, mouse support
-- One-time setup: `qvm init` (interactive wizard)
-- A single static `amd64` binary — no daemon, no extra runtime
+  + content pane, theming, **keyboard-only** (mouse capture removed
+  intentionally; see § 9.5)
+- One-time setup: `qvm init` (interactive TUI wizard)
+- A single static binary per arch (`amd64` + `arm64`) — no daemon,
+  no extra runtime
 
 **Out of scope, by design:**
 - Multi-host / clustering / federation
@@ -280,11 +282,10 @@ The three surfaces:
   `Makefile`.
 
 - **TUI** (`src/tui/`): launched by running `qvm` with no subcommand.
-  Catppuccin Mocha theme by default. Sidebar lists VMs; right pane shows
-  selected VM details. All actions are visible as labeled buttons in a
-  bottom action bar. Mouse + keyboard both work. Designed to feel
-  approachable to operators who aren't deeply comfortable on a Linux
-  terminal.
+  Catppuccin Mocha theme by default (or Latte light, via `[tui] theme`).
+  Sidebar lists VMs; right pane shows selected VM details. All actions
+  are visible as labeled keybindings in a bottom action bar.
+  **Keyboard-only** (mouse capture removed — see § 9.5).
 
 - **VNC bridge** (`src/commands/vnc.rs`): when invoked with `--browser`,
   qvm spawns `websockify` + serves the system-installed noVNC bundle on
@@ -338,15 +339,17 @@ src/
 
 src/tui/
     ├── mod.rs             Terminal init/teardown, panic-hook, main event loop.
-    │                      The ONLY file that touches raw mode and mouse capture.
-    ├── app.rs             State machine: Mode enum, FocusPane, hit_targets,
-    │                      pending optimistic state, refresh logic with IP cache.
-    ├── theme.rs           Single source of visual truth. Catppuccin Mocha by
-    │                      default; helpers for state badges, key hints, etc.
-    ├── ui.rs              Pure render functions. Consumes &Theme + &mut App
-    │                      (the &mut is so the action bar / sidebar can push
-    │                      their hit-test rects into App for the mouse handler).
-    ├── events.rs          Keymap per Mode. Mouse hit-testing.
+    │                      The ONLY file that touches raw mode. Mouse capture
+    │                      is intentionally never enabled (see § 9.5).
+    ├── app.rs             State machine: Mode enum, FocusPane, pending
+    │                      optimistic state, refresh logic with IP cache.
+    ├── refresh.rs         Background refresh worker (mpsc channel). Keeps
+    │                      the UI non-blocking while libvirt is slow.
+    ├── theme.rs           Single source of visual truth. Catppuccin Mocha
+    │                      (default) + Latte; helpers for state badges, hints.
+    ├── ui.rs              Pure render functions. Consumes &Theme + &mut App.
+    ├── events.rs          Keymap per Mode. Keyboard only.
+    ├── onboard.rs         First-run TUI wizard (7 steps).
     └── forms.rs           Minimal text-input helper (avoids tui-input dep).
 
 tests/
@@ -718,9 +721,10 @@ The TUI is built from four regions, laid out top-to-bottom:
 - **Toast** (1 line, only when active): the latest success/error
   message, auto-dismissed after 5 s.
 - **Action bar** (bordered panel, 1-3 rows): labelled `[k] Label`
-  buttons. `fit_action_rows` greedily packs them onto as few rows as
-  fit the terminal width. Disabled buttons (e.g. Stop when nothing is
-  running) render faint. Buttons are clickable (see § 9.5 mouse).
+  hints. `fit_action_rows` greedily packs them onto as few rows as
+  fit the terminal width. Disabled hints (e.g. Stop when nothing is
+  running) render faint. Triggered by the bracketed key only —
+  keyboard-only by design (see § 9.5).
 
 `Tab` cycles `FocusPane::{Sidebar, Detail}`; the active pane gets a
 mauve border instead of the dim default. Render functions are pure
@@ -756,9 +760,6 @@ The state machine is small (six modes) and best shown as a table:
 ```
 
 `Tab` cycles `FocusPane::{Sidebar, Detail}` independently of `Mode`.
-The mouse-handler in `mod.rs::mouse_to_action` maps clicks to the
-same actions a key would, by walking the `sidebar_hits` /
-`action_hits` rect tables that the renderers populate every frame.
 
 `Mode` is in `src/tui/app.rs`. Transitions happen in `App::apply`. The
 crossterm key map in `events.rs` routes keys differently per mode —
@@ -772,7 +773,7 @@ iteration:
 
 1. Renders the current frame.
 2. Increments `app.tick` (used by the spinner glyph).
-3. Polls for keyboard or mouse events; dispatches if any.
+3. Polls for keyboard events; dispatches if any.
 4. If `app.tick_due()` (≥ 2 s since last refresh), calls `app.refresh`.
 
 `App::refresh` is synchronous (no tokio, no threads). It does:
@@ -805,26 +806,40 @@ real state.
 Action-bar enables also use `displayed_state` so the buttons don't
 flicker direction (e.g., Start enabled → disabled → enabled).
 
-### 9.5 Mouse and hit testing
+### 9.5 Why keyboard-only (no mouse capture)
 
-ratatui doesn't track widget regions for you. We do it manually:
+The TUI used to capture mouse events for sidebar clicks and action-bar
+buttons. That was removed in commit `fix(tui): mouse capture leak —
+disable on suspend + panic`. The root cause:
 
-- `App` carries `sidebar_hits: Vec<(Rect, usize)>` and
-  `action_hits: Vec<(Rect, char)>`.
-- `ui::draw` clears both at the top, then sub-renderers push entries
-  as they render.
-- On `Event::Mouse(Down(Left))`, `mod.rs::mouse_to_action` walks the
-  tables, computes the matching `Action`, and dispatches.
+When ratatui enables mouse capture, the terminal switches to a tracking
+mode that emits escape sequences (`^[[<35;X;YM` for SGR mode 1003)
+**every time the mouse moves**. Those sequences are only meaningful while
+the program is running. If the program exits without explicitly disabling
+capture (panic, SIGINT during a `suspend()`-ed child, kernel kill), the
+terminal stays in tracking mode — and the very next shell prompt fills
+with garbage on every cursor twitch. Recovery requires `reset`.
 
-Scroll wheel events become `Action::ScrollDetailUp` / `ScrollDetailDown`
-regardless of cursor position.
+We had three exit paths that could leak:
+1. Panic in render or refresh worker.
+2. SIGINT during `suspend()` (when raw mode is off and the child has the
+   terminal — Ctrl-C kills qvm directly).
+3. Kill -9 / OOM kill / SSH disconnect mid-execution.
+
+We could have plugged #1 and #2, but #3 is unfixable: any abrupt death
+with mouse capture on corrupts the parent shell. Keyboard navigation
+already covers everything mouse did (sidebar via ↑/↓, action bar via
+the bracketed key, scrolling via PgUp/PgDn). The trade is fine.
+
+So `tui::run` never emits `EnableMouseCapture`, `events.rs` doesn't
+handle mouse actions, and `app.rs` has no hit-test tables. The shell
+prompt stays clean even on the worst exit path.
 
 ### 9.6 Theme
 
 `src/tui/theme.rs` is the single source of truth for colours. Every
-render fn takes `&Theme` (or `app.theme.clone()` when it also needs
-`&mut app.hits`). No `Style::default().fg(Color::...)` calls outside
-`theme.rs`.
+render fn takes `&Theme`. No `Style::default().fg(Color::...)` calls
+outside `theme.rs`.
 
 Default palette is Catppuccin Mocha. RGB values are pinned via
 `Color::Rgb(r,g,b)` — every modern terminal that supports truecolor

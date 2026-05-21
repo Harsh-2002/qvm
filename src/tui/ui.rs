@@ -26,10 +26,6 @@ use ratatui::{
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn draw(f: &mut Frame, app: &mut App) {
-    // Reset hit-test tables — repopulated by sub-renderers.
-    app.sidebar_hits.clear();
-    app.action_hits.clear();
-
     let area = f.area();
     let theme = app.theme.clone();
 
@@ -196,17 +192,6 @@ fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
     let list_area = Rect { x: inner.x, y: cursor_y, width: inner.width, height: list_h };
     f.render_widget(List::new(items), list_area);
 
-    // Record hit areas for mouse clicks.
-    for i in 0..items_count(app, max_items) {
-        let row_rect = Rect {
-            x: inner.x,
-            y: cursor_y + (i as u16) * per_item,
-            width: inner.width,
-            height: 2, // name + state line; ignore the blank
-        };
-        app.sidebar_hits.push((row_rect, i));
-    }
-
     // [+] create new VM at the bottom of the sidebar.
     let bottom_y = inner.y + inner.height - 2;
     f.render_widget(
@@ -230,10 +215,6 @@ fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 // ── content pane ──────────────────────────────────────────────────────────────
-
-fn items_count(app: &App, max_items: usize) -> usize {
-    app.visible().len().min(max_items)
-}
 
 fn draw_content(f: &mut Frame, area: Rect, app: &mut App) {
     let t = &app.theme;
@@ -697,9 +678,7 @@ fn fit_action_rows<'a>(items: &[(&'a str, &'a str, bool)], max_w: u16)
 fn draw_action_bar(f: &mut Frame, area: Rect, app: &mut App,
     rows: &[Vec<(&str, &str, bool)>])
 {
-    // Owned theme copy — keeps `&app.theme` alive from conflicting with
-    // `&mut app.action_hits` we mutate below.
-    let t = app.theme.clone();
+    let t = &app.theme;
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -710,15 +689,14 @@ fn draw_action_bar(f: &mut Frame, area: Rect, app: &mut App,
 
     for (i, row) in rows.iter().enumerate() {
         let row_area = Rect { x: inner.x, y: inner.y + i as u16, width: inner.width, height: 1 };
-        draw_action_row(f, row_area, &t, row, &mut app.action_hits);
+        draw_action_row(f, row_area, t, row);
     }
 }
 
-fn draw_action_row(f: &mut Frame, area: Rect, t: &Theme, items: &[(&str, &str, bool)], hits: &mut Vec<(Rect, char)>) {
+fn draw_action_row(f: &mut Frame, area: Rect, t: &Theme, items: &[(&str, &str, bool)]) {
     let mut spans: Vec<Span<'_>> = vec![Span::raw("  ")];
-    let mut x_offset: u16 = 2;
     for (i, (key, label, enabled)) in items.iter().enumerate() {
-        if i > 0 { spans.push(Span::raw("   ")); x_offset += 3; }
+        if i > 0 { spans.push(Span::raw("   ")); }
         let key_style = if *enabled {
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
         } else {
@@ -730,26 +708,6 @@ fn draw_action_row(f: &mut Frame, area: Rect, t: &Theme, items: &[(&str, &str, b
         spans.push(Span::styled("]", t.faint()));
         spans.push(Span::raw(" "));
         spans.push(Span::styled((*label).to_string(), lbl_style));
-
-        // Hit-test region for this button. Only register if enabled.
-        if *enabled {
-            // Use the first char of the key string as the lookup char.
-            // For multi-char keys (Tab, Enter, Esc) we don't register mouse hits.
-            if let Some(c) = key.chars().next() {
-                if key.chars().count() == 1 {
-                    let button_w = (key.len() + 2 + 1 + label.len()) as u16; // [k] label
-                    let r = Rect { x: area.x + x_offset, y: area.y, width: button_w, height: 1 };
-                    hits.push((r, c));
-                    x_offset += button_w;
-                } else {
-                    let button_w = (key.len() + 2 + 1 + label.len()) as u16;
-                    x_offset += button_w;
-                }
-            }
-        } else {
-            let button_w = (key.len() + 2 + 1 + label.len()) as u16;
-            x_offset += button_w;
-        }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }

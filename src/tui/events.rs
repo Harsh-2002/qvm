@@ -15,8 +15,6 @@ pub enum Action {
     // Sidebar navigation (always available except in text-entry modes).
     Up,
     Down,
-    /// Mouse-driven: jump straight to the Nth visible row.
-    SelectIndex(usize),
 
     // Detail-pane scrolling.
     ScrollDetailUp,
