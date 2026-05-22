@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const STEPS: &[&str] = &[
-    "Welcome", "Host check", "Network", "SSH keys",
+    "Welcome", "Host check", "Network", "DNS", "SSH keys",
     "Storage", "First image", "Done",
 ];
 
@@ -50,10 +50,11 @@ enum StepKind {
     Welcome     = 0,
     HostCheck   = 1,
     Network     = 2,
-    SshKeys     = 3,
-    Paths       = 4,
-    FirstImage  = 5,
-    Done        = 6,
+    Dns         = 3,
+    SshKeys     = 4,
+    Paths       = 5,
+    FirstImage  = 6,
+    Done        = 7,
 }
 
 impl StepKind {
@@ -62,7 +63,8 @@ impl StepKind {
         match self {
             Welcome    => HostCheck,
             HostCheck  => Network,
-            Network    => SshKeys,
+            Network    => Dns,
+            Dns        => SshKeys,
             SshKeys    => Paths,
             Paths      => FirstImage,
             FirstImage => Done,
@@ -76,7 +78,8 @@ impl StepKind {
             Welcome    => Welcome,
             HostCheck  => Welcome,
             Network    => HostCheck,
-            SshKeys    => Network,
+            Dns        => Network,
+            SshKeys    => Dns,
             Paths      => SshKeys,
             FirstImage => Paths,
             Done       => FirstImage,
@@ -125,6 +128,10 @@ struct OnboardApp {
     /// Row cursor in the detected-keys list when ssh_focus == Detected.
     ssh_detected_idx: usize,
 
+    /// DNS resolvers, comma-separated text the operator can edit. Parsed
+    /// into a Vec<String> at the Done step.
+    dns_input:      TextInput,
+
     images_path:    TextInput,
     vms_path:       TextInput,
     cloudinit_path: TextInput,
@@ -166,6 +173,12 @@ impl OnboardApp {
             ssh_focus:     SshFocus::Input,
             ssh_detected_idx: 0,
 
+            // Pre-fill DNS with Cloudflare + Google so the common case is
+            // "press Enter to accept". Blank → no DNS override (DHCP wins
+            // for non-static VMs; static VMs fall back to 1.1.1.1/8.8.8.8
+            // at create time anyway, per `create::run` logic).
+            dns_input:      TextInput::with_value("1.1.1.1, 8.8.8.8"),
+
             images_path:    TextInput::with_value("/var/lib/qvm/images"),
             vms_path:       TextInput::with_value("/var/lib/qvm/vms"),
             cloudinit_path: TextInput::with_value("/var/lib/qvm/cloudinit"),
@@ -185,6 +198,18 @@ impl OnboardApp {
         } else {
             self.bridge_choices[self.bridge_sel].clone()
         }
+    }
+
+    /// Parse `dns_input` ("1.1.1.1, 8.8.8.8") into a Vec<String>.
+    /// Tolerant of commas + spaces; empty entries dropped silently.
+    fn dns(&self) -> Vec<String> {
+        self.dns_input.value
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter_map(|s| {
+                let t = s.trim();
+                if t.is_empty() { None } else { Some(t.to_string()) }
+            })
+            .collect()
     }
 
     /// All SSH keys that will be written to config: every detected key
@@ -467,6 +492,14 @@ fn handle_key(
             }
             _ => {}
         },
+        StepKind::Dns => match k.code {
+            KeyCode::Char(c) => app.dns_input.insert(c),
+            KeyCode::Backspace => app.dns_input.backspace(),
+            KeyCode::Left      => app.dns_input.left(),
+            KeyCode::Right     => app.dns_input.right(),
+            KeyCode::Enter     => { app.step = app.step.next(); app.flash = None; }
+            _ => {}
+        },
         StepKind::SshKeys => {
             // Tab cycles focus between the detected-keys checklist and the
             // input box. Detected list only gets focus if there's at least
@@ -580,8 +613,10 @@ fn handle_key(
         StepKind::Done => {
             if k.code == KeyCode::Enter {
                 // Write the config and finish.
+                let dns_list = app.dns();
                 let toml = render_config(WizardAnswers {
                     bridge:         &app.bridge(),
+                    dns:            &dns_list,
                     distro:         &app.distro_choices.get(app.distro_sel).cloned().unwrap_or_default(),
                     cpus:           2,
                     memory_gb:      4,
@@ -680,6 +715,7 @@ fn draw_step(f: &mut Frame, area: Rect, app: &OnboardApp) {
         StepKind::Welcome    => draw_welcome(f, inner, app),
         StepKind::HostCheck  => draw_host_check(f, inner, app),
         StepKind::Network    => draw_network(f, inner, app),
+        StepKind::Dns        => draw_dns(f, inner, app),
         StepKind::SshKeys    => draw_ssh_keys(f, inner, app),
         StepKind::Paths      => draw_paths(f, inner, app),
         StepKind::FirstImage => draw_first_image(f, inner, app),
@@ -804,6 +840,39 @@ fn draw_network(f: &mut Frame, area: Rect, app: &OnboardApp) {
                 Style::default().fg(t.text).add_modifier(Modifier::BOLD)
             } else { Style::default().fg(t.text_dim) }),
     ]));
+    f.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        area.inner(Margin { horizontal: 2, vertical: 1 }),
+    );
+}
+
+fn draw_dns(f: &mut Frame, area: Rect, app: &OnboardApp) {
+    let t = &app.theme;
+    let lines: Vec<Line<'_>> = vec![
+        Line::from(Span::styled(
+            "DNS resolvers for new VMs.",
+            Style::default().fg(t.text_dim))),
+        Line::from(Span::styled(
+            "Comma-separated list. Used only when a VM is given a static IP",
+            Style::default().fg(t.text_faint))),
+        Line::from(Span::styled(
+            "(`qvm run --ip ...`); DHCP VMs ignore this and use the router's.",
+            Style::default().fg(t.text_faint))),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("  DNS:  ", Style::default().fg(t.text_dim)),
+            Span::styled(app.dns_input.value.clone(),
+                Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+            Span::styled("█", Style::default().fg(t.accent)),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "Blank line = no global DNS override (qvm falls back to 1.1.1.1 + 8.8.8.8",
+            Style::default().fg(t.text_faint))),
+        Line::from(Span::styled(
+            "if you later create a static-IP VM without setting this).",
+            Style::default().fg(t.text_faint))),
+    ];
     f.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: false }),
         area.inner(Margin { horizontal: 2, vertical: 1 }),
@@ -1030,6 +1099,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &OnboardApp) {
         StepKind::Welcome    => "  [Enter] Begin   [Ctrl-C] Quit",
         StepKind::HostCheck  => "  [Enter] Continue   [i] Install missing   [Esc] Back",
         StepKind::Network    => "  [Enter] Continue   [↑/↓] Choose   type for custom   [Esc] Back",
+        StepKind::Dns        => "  [Enter] Continue   type DNS list, blank to skip   [Esc] Back",
         StepKind::SshKeys    => "  [Tab] Switch focus   [Enter] Add key / done   [Space] Toggle detected   [Esc] Back",
         StepKind::Paths      => "  [Tab] Move   [Enter] Continue   [Esc] Back",
         StepKind::FirstImage => "  [↑/↓] Choose   [Enter] Pull   [Space] Skip   [Esc] Back",

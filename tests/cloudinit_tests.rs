@@ -25,6 +25,9 @@ fn default_seed<'a>(name: &'a str, user: &'a str, shell: &'a str, keys: &'a [Str
         ssh_keys: keys,
         grub_timeout: Some(0),
         motd: None,
+        upgrade: false,
+        swap_mb: None,
+        network: None,
     }
 }
 
@@ -86,6 +89,9 @@ fn password_hash_quoted_correctly() {
         ssh_keys: &keys,
         grub_timeout: Some(0),
         motd: None,
+        upgrade: false,
+        swap_mb: None,
+        network: None,
     };
     let ud = user_data(&s);
     assert!(ud.contains(r#"passwd: "$6$saltyabc$hashhashhash""#), "password hash must be in double quotes to survive YAML");
@@ -121,6 +127,9 @@ fn grub_timeout_none_omits_the_block() {
         ssh_keys: &keys,
         grub_timeout: None,
         motd: None,
+        upgrade: false,
+        swap_mb: None,
+        network: None,
     };
     let ud = user_data(&s);
     // When grub_timeout is None we pass an empty string to the script.
@@ -187,6 +196,9 @@ fn seed_with_motd<'a>(keys: &'a [String], motd: &'a qvm::config::Motd) -> Seed<'
         ssh_keys: keys,
         grub_timeout: Some(0),
         motd: Some(motd),
+        upgrade: false,
+        swap_mb: None,
+        network: None,
     }
 }
 
@@ -266,6 +278,104 @@ fn motd_custom_palette_round_trips() {
     // The defaults stay for the unset ones.
     assert!(ud.contains("LABEL_ESC='[0;36m'"),
         "untouched palette fields must keep the defaults");
+}
+
+// ── NTP / package upgrade / swap / network-config ──────────────
+
+#[test]
+fn ntp_module_is_always_emitted() {
+    let keys: Vec<String> = vec![];
+    let s = default_seed("h", "u", "/bin/bash", &keys);
+    let ud = user_data(&s);
+    assert!(ud.contains("ntp:"), "ntp: directive missing from user-data");
+    assert!(ud.contains("enabled: true"),
+        "ntp.enabled: true missing");
+    assert!(ud.contains("pool.ntp.org"),
+        "expected pool.ntp.org server entry");
+}
+
+#[test]
+fn package_upgrade_off_by_default() {
+    let keys: Vec<String> = vec![];
+    let s = default_seed("h", "u", "/bin/bash", &keys);
+    let ud = user_data(&s);
+    assert!(!ud.contains("package_upgrade: true"),
+        "package_upgrade leaked into user-data with upgrade=false");
+}
+
+#[test]
+fn package_upgrade_flag_emits_directives() {
+    let keys: Vec<String> = vec![];
+    let mut s = default_seed("h", "u", "/bin/bash", &keys);
+    s.upgrade = true;
+    let ud = user_data(&s);
+    assert!(ud.contains("package_update:  true"),
+        "package_update directive missing");
+    assert!(ud.contains("package_upgrade: true"),
+        "package_upgrade directive missing");
+}
+
+#[test]
+fn swap_block_present_when_swap_mb_set() {
+    let keys: Vec<String> = vec![];
+    let mut s = default_seed("h", "u", "/bin/bash", &keys);
+    s.swap_mb = Some(2048);
+    let ud = user_data(&s);
+    assert!(ud.contains("SWAP_MB=\"2048\""),
+        "firstboot swap block missing SWAP_MB=2048: {ud}");
+    assert!(ud.contains("/swapfile"),
+        "firstboot swap block missing /swapfile reference");
+    assert!(ud.contains("mkswap /swapfile"),
+        "firstboot swap block missing mkswap call");
+}
+
+#[test]
+fn swap_block_absent_when_none() {
+    let keys: Vec<String> = vec![];
+    let s = default_seed("h", "u", "/bin/bash", &keys);
+    let ud = user_data(&s);
+    assert!(!ud.contains("/swapfile"),
+        "/swapfile must not be in user-data when swap_mb is None");
+}
+
+#[test]
+fn network_config_static_renders_addresses_gateway_dns() {
+    let keys: Vec<String> = vec![];
+    let dns = vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()];
+    let mut s = default_seed("h", "u", "/bin/bash", &keys);
+    let net = qvm::cloudinit::NetworkCfg {
+        ip_cidr: "10.1.1.50/24",
+        gateway: "10.1.1.1",
+        dns:     &dns,
+    };
+    s.network = Some(net);
+
+    let td = tempfile::tempdir().unwrap();
+    let ci = td.path().join("ci");
+    s.write_files(&ci).expect("write_files should succeed");
+
+    let netcfg = std::fs::read_to_string(ci.join("network-config"))
+        .expect("network-config file must be written when Seed.network is Some");
+    assert!(netcfg.contains("version: 2"),       "missing version: 2");
+    assert!(netcfg.contains("dhcp4: false"),     "missing dhcp4: false");
+    assert!(netcfg.contains("10.1.1.50/24"),     "missing static address");
+    assert!(netcfg.contains("to: default"),      "expected routes: form (not deprecated gateway4)");
+    assert!(netcfg.contains("via: 10.1.1.1"),    "missing gateway via");
+    assert!(netcfg.contains("\"1.1.1.1\""),      "missing first DNS");
+    assert!(netcfg.contains("\"8.8.8.8\""),      "missing second DNS");
+    assert!(!netcfg.contains("gateway4"),
+        "must not use the deprecated `gateway4:` form: {netcfg}");
+}
+
+#[test]
+fn network_config_absent_for_pure_dhcp() {
+    let keys: Vec<String> = vec![];
+    let s = default_seed("h", "u", "/bin/bash", &keys);
+    let td = tempfile::tempdir().unwrap();
+    let ci = td.path().join("ci");
+    s.write_files(&ci).expect("write_files should succeed");
+    assert!(!ci.join("network-config").exists(),
+        "no `--ip` ⇒ no network-config file (preserves DHCP behaviour)");
 }
 
 // Sanity-keep so we don't accidentally remove the Path import.

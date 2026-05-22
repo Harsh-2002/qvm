@@ -721,6 +721,13 @@ impl App {
             password: Some(password),
             no_autostart: false,
             nested: Some(nested),
+            // The TUI Create form doesn't expose these knobs yet — VMs
+            // created through the TUI get the safe defaults (no upgrade,
+            // no swap, DHCP). Adding form fields is a follow-up.
+            upgrade: false,
+            swap:    None,
+            ip:      None,
+            gateway: None,
         })
     }
 }

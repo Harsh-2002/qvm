@@ -1,6 +1,6 @@
 //! Unit tests for util.rs — the parts I can verify without libvirt.
 
-use qvm::util::{hash_password, random_username, valid_username, valid_vm_name};
+use qvm::util::{hash_password, parse_size_mb, random_username, valid_username, valid_vm_name};
 
 #[test]
 fn vm_name_accepts_normal_names() {
@@ -73,6 +73,30 @@ fn password_hash_is_sha512_crypt_format() {
     assert_eq!(parts[1], "6");
     assert!(!parts[2].is_empty(), "no salt component");
     assert!(parts[3].len() >= 80, "hash component too short: {} chars", parts[3].len());
+}
+
+// ── parse_size_mb ────────────────────────────────────────────────
+
+#[test]
+fn parse_size_mb_handles_units() {
+    assert_eq!(parse_size_mb("512M").unwrap(),   512);
+    assert_eq!(parse_size_mb("512m").unwrap(),   512);
+    assert_eq!(parse_size_mb("512MB").unwrap(),  512);
+    assert_eq!(parse_size_mb("512mb").unwrap(),  512);
+    assert_eq!(parse_size_mb("1G").unwrap(),     1024);
+    assert_eq!(parse_size_mb("1g").unwrap(),     1024);
+    assert_eq!(parse_size_mb("2GB").unwrap(),    2048);
+    assert_eq!(parse_size_mb("2gb").unwrap(),    2048);
+    assert_eq!(parse_size_mb("100MB").unwrap(),  100);
+    assert_eq!(parse_size_mb("  1G  ").unwrap(), 1024); // tolerates outer whitespace
+}
+
+#[test]
+fn parse_size_mb_rejects_garbage() {
+    for bad in ["", "  ", "abc", "1.5G", "-100M", "100K", "100", "G", "M", "0M", "0G"] {
+        let err = parse_size_mb(bad);
+        assert!(err.is_err(), "should reject {bad:?} but parsed as {err:?}");
+    }
 }
 
 #[test]

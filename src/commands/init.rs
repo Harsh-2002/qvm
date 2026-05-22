@@ -43,6 +43,7 @@ fn write_defaults(config_path: &Path) -> Result<()> {
 
 pub struct WizardAnswers<'a> {
     pub bridge:         &'a str,
+    pub dns:            &'a [String],
     pub distro:         &'a str,
     pub cpus:           u32,
     pub memory_gb:      u32,
@@ -72,6 +73,13 @@ pub fn render_config(a: WizardAnswers<'_>) -> String {
         s.trim_end().to_string()
     };
 
+    let dns_yaml = if a.dns.is_empty() {
+        "[]".to_string()
+    } else {
+        let inner: Vec<String> = a.dns.iter().map(|d| yaml_inline(d)).collect();
+        format!("[{}]", inner.join(", "))
+    };
+
     let autostart = if a.autostart { "true" } else { "false" };
 
     format!(
@@ -86,6 +94,7 @@ paths:
 
 network:
   bridge: {bridge}
+  dns:    {dns}
 
 defaults:
   distro:       {distro}
@@ -110,6 +119,7 @@ motd:
         vms       = yaml_inline(a.vms_path),
         ci        = yaml_inline(a.cloudinit_path),
         bridge    = yaml_inline(a.bridge),
+        dns       = dns_yaml,
         distro    = yaml_inline(a.distro),
         cpus      = a.cpus,
         mem       = a.memory_gb,

@@ -116,6 +116,50 @@ pub fn prompt_u32(question: &str, default: u32) -> u32 {
     }
 }
 
+// ── size parsing ──────────────────────────────────────────────────────────────
+
+/// Parse a human-friendly size string into MB. Accepts `M`, `MB`, `G`, `GB`
+/// suffixes (case-insensitive). Plain integers (no suffix) are rejected —
+/// callers should always be explicit about the unit so a misplaced `2`
+/// can't quietly become 2 MB.
+///
+/// Examples: `"512M"` → 512, `"1G"` → 1024, `"2GB"` → 2048, `"100mb"` → 100.
+pub fn parse_size_mb(s: &str) -> Result<u64> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err(Error::User("size is empty".into()));
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let (digits, multiplier) = if let Some(num) = lower.strip_suffix("gb") {
+        (num, 1024u64)
+    } else if let Some(num) = lower.strip_suffix("mb") {
+        (num, 1u64)
+    } else if let Some(num) = lower.strip_suffix('g') {
+        (num, 1024u64)
+    } else if let Some(num) = lower.strip_suffix('m') {
+        (num, 1u64)
+    } else {
+        return Err(Error::User(format!(
+            "size '{s}' has no unit. Use M, MB, G, or GB (e.g. 512M, 1G, 2GB)."
+        )));
+    };
+    let digits = digits.trim();
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err(Error::User(format!(
+            "size '{s}' is not a positive whole number with a unit."
+        )));
+    }
+    let n: u64 = digits.parse().map_err(|_| Error::User(format!(
+        "size '{s}' is out of range."
+    )))?;
+    if n == 0 {
+        return Err(Error::User(format!("size '{s}' must be greater than zero.")));
+    }
+    n.checked_mul(multiplier).ok_or_else(|| Error::User(format!(
+        "size '{s}' overflowed."
+    )))
+}
+
 /// Stricter "type the literal phrase" confirmation for destructive ops.
 /// Returns true only if the user types `phrase` exactly (case-sensitive).
 pub fn confirm_phrase(question: &str, phrase: &str) -> bool {

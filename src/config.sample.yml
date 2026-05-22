@@ -9,6 +9,7 @@ paths:
 
 network:
   bridge: br0
+  dns:    []               # e.g. [1.1.1.1, 8.8.8.8]; only used with `qvm run --ip ...`
 
 defaults:
   distro:       debian:13

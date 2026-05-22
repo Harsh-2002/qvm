@@ -34,6 +34,10 @@ pub struct Paths {
 #[serde(default)]
 pub struct Network {
     pub bridge: String,
+    /// Upstream DNS resolvers used for new VMs with a static IP
+    /// (`qvm run --ip ...`). Empty = qvm falls back to 1.1.1.1 + 8.8.8.8
+    /// at create time so a static VM is never DNS-broken from boot.
+    pub dns:    Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -166,7 +170,7 @@ impl Default for Paths {
 }
 
 impl Default for Network {
-    fn default() -> Self { Self { bridge: "br0".into() } }
+    fn default() -> Self { Self { bridge: "br0".into(), dns: vec![] } }
 }
 
 impl Default for Defaults {

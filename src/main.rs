@@ -60,6 +60,15 @@ enum Cmd {
         /// Disable nested virtualization for this VM (host-model -vmx -svm).
         /// Default is enabled (host-passthrough).
         #[arg(long)] no_nested: bool,
+        /// Run `apt/dnf/apk/pacman upgrade` on first boot. Adds 1–5 min
+        /// to boot time; off by default.
+        #[arg(long)] upgrade: bool,
+        /// Create a persistent swap file (e.g. 1G, 512M, 2GB).
+        #[arg(long, value_name = "SIZE")] swap: Option<String>,
+        /// Static IPv4 in CIDR form (e.g. 10.1.1.50/24). Default = DHCP.
+        #[arg(long, value_name = "CIDR")] ip: Option<String>,
+        /// IPv4 default gateway. Required when --ip is given.
+        #[arg(long, value_name = "IP")] gateway: Option<String>,
     },
 
     /// Delete a VM and all its data.
@@ -315,7 +324,8 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
     match cmd {
         Cmd::Init { .. } | Cmd::Doctor { .. } | Cmd::Completions { .. } => unreachable!("handled above"),
 
-        Cmd::Create { name, distro, cpus, memory_gb, disk_gb, user, password, no_autostart, no_nested } => {
+        Cmd::Create { name, distro, cpus, memory_gb, disk_gb, user, password,
+                      no_autostart, no_nested, upgrade, swap, ip, gateway } => {
             commands::create::run(&cfg, commands::create::Args {
                 name: name.clone(),
                 distro: distro.clone(),
@@ -326,6 +336,10 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
                 password: password.clone(),
                 no_autostart: *no_autostart,
                 nested: if *no_nested { Some(false) } else { None },
+                upgrade: *upgrade,
+                swap: swap.clone(),
+                ip: ip.clone(),
+                gateway: gateway.clone(),
             })
         }
 

@@ -189,6 +189,23 @@ fn vm_path_accessors_join_under_configured_dirs() {
 }
 
 #[test]
+fn network_dns_defaults_to_empty() {
+    let cfg = Config::default();
+    assert!(cfg.network.dns.is_empty(),
+        "default DNS list must be empty so DHCP runs are byte-identical to today");
+}
+
+#[test]
+fn network_dns_overrides_via_yaml() {
+    let f = write_tmp(r#"
+network:
+  dns: [1.1.1.1, 8.8.8.8]
+"#);
+    let cfg = Config::load(Some(f.path())).unwrap();
+    assert_eq!(cfg.network.dns, vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()]);
+}
+
+#[test]
 fn motd_defaults_are_enabled_with_auto_color() {
     let cfg = Config::default();
     assert!(cfg.motd.enable, "MOTD must default to enabled");
@@ -260,8 +277,10 @@ fn render_config_round_trips_back_through_load() {
     // something I can't read" loop. This test guards that contract.
     use qvm::commands::init::{render_config, WizardAnswers};
     let keys = vec!["ssh-ed25519 AAAA me@laptop".to_string()];
+    let dns: Vec<String> = vec!["1.1.1.1".into(), "8.8.8.8".into()];
     let rendered = render_config(WizardAnswers {
         bridge: "br0",
+        dns: &dns,
         distro: "debian:13",
         cpus: 2, memory_gb: 4, disk_gb: 50,
         autostart: true, grub_timeout: 0,

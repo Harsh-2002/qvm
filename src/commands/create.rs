@@ -1,9 +1,9 @@
-use crate::cloudinit::Seed;
+use crate::cloudinit::{NetworkCfg, Seed};
 use crate::cmd::{require, run as cmd_run, run_inherit};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::libvirt;
-use crate::util::{hash_password, require_username};
+use crate::util::{hash_password, parse_size_mb, require_username};
 
 #[derive(Debug)]
 pub struct Args {
@@ -19,6 +19,15 @@ pub struct Args {
     /// `None` falls back to `cfg.defaults.nested`. CLI maps `--no-nested`
     /// to `Some(false)`.
     pub nested:   Option<bool>,
+    /// Run `package_update` + `package_upgrade` on first boot.
+    pub upgrade:  bool,
+    /// Persistent swap file size, e.g. `"2G"`, `"512M"`. None = no swap.
+    /// Parsed via `util::parse_size_mb`.
+    pub swap:     Option<String>,
+    /// Static IPv4 in CIDR form (e.g. `"10.1.1.50/24"`). None = DHCP.
+    pub ip:       Option<String>,
+    /// IPv4 default gateway. Required when `ip` is set.
+    pub gateway:  Option<String>,
 }
 
 pub fn run(cfg: &Config, a: Args) -> Result<()> {
@@ -56,6 +65,44 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
         return Err(Error::User("cpus, memory, and disk must all be > 0".into()));
     }
 
+    // Parse --swap into MB (None means no swap).
+    let swap_mb: Option<u64> = match a.swap.as_deref() {
+        Some(s) => Some(parse_size_mb(s)?),
+        None    => None,
+    };
+
+    // --ip requires --gateway. We do NOT silently assume /24 or a default
+    // gateway — those are exactly the assumptions that lose someone access
+    // to a misconfigured VM. Force the operator to be explicit.
+    let netcfg_owned: Option<(String, String, Vec<String>)> = match (a.ip.as_deref(), a.gateway.as_deref()) {
+        (Some(ip), Some(gw)) => {
+            if !ip.contains('/') {
+                return Err(Error::User(format!(
+                    "--ip '{ip}' must be in CIDR form (e.g. 10.1.1.50/24)."
+                )));
+            }
+            // DNS source: operator's config; fall back to public resolvers
+            // so a static VM never boots without working name resolution.
+            let dns: Vec<String> = if cfg.network.dns.is_empty() {
+                vec!["1.1.1.1".into(), "8.8.8.8".into()]
+            } else {
+                cfg.network.dns.clone()
+            };
+            Some((ip.to_string(), gw.to_string(), dns))
+        }
+        (Some(_), None) => {
+            return Err(Error::User(
+                "--gateway is required when --ip is given (qvm refuses to guess a default route).".into()
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(Error::User(
+                "--gateway without --ip has no effect. Drop the flag or also pass --ip <CIDR>.".into()
+            ));
+        }
+        (None, None) => None,
+    };
+
     let d = cfg.distro(&distro)?;
     // Create the qvm dirs FIRST — auto-pull writes to <images>/X.partial
     // and would otherwise fail when migrating from a deleted dir layout.
@@ -75,6 +122,11 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
 
     // --- cloud-init seed ---
     println!("Generating cloud-init seed...");
+    let netcfg = netcfg_owned.as_ref().map(|(ip, gw, dns)| NetworkCfg {
+        ip_cidr: ip.as_str(),
+        gateway: gw.as_str(),
+        dns:     dns.as_slice(),
+    });
     Seed {
         vm_name: &name,
         login_user: &user,
@@ -83,6 +135,9 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
         ssh_keys: &cfg.ssh_keys,
         grub_timeout: cfg.defaults.grub_timeout,
         motd: if cfg.motd.enable { Some(&cfg.motd) } else { None },
+        upgrade: a.upgrade,
+        swap_mb,
+        network: netcfg,
     }.build(&ci_dir, &iso_path)?;
 
     // --- SELF-CONTAINED disk: copy the base, do NOT chain it. ---

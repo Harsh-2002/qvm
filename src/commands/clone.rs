@@ -206,6 +206,9 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
         ssh_keys: &cfg.ssh_keys,
         grub_timeout: cfg.defaults.grub_timeout,
         motd: if cfg.motd.enable { Some(&cfg.motd) } else { None },
+        upgrade: false,   // clones never trigger a fresh package upgrade
+        swap_mb: None,    // any swapfile on the source disk persists into the clone
+        network: None,    // DHCP — cloning a static-IP source would otherwise collide
     }.build(&dst_ci, &dst_iso)?;
 
     // ── define + start ──────────────────────────────────────────────────────
