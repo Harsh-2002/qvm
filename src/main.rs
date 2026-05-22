@@ -86,6 +86,14 @@ enum Cmd {
     /// SSH into a VM directly (resolves login user + IP, then execs ssh).
     Ssh     { name: String },
 
+    /// Run a one-off command in a VM over SSH. Use `--` to separate qvm
+    /// flags from the command, e.g. `qvm exec web01 -- uptime -p`.
+    Exec {
+        name: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd:  Vec<String>,
+    },
+
     /// List all VMs.
     #[command(alias = "ps")]
     Ls { #[arg(long)] json: bool },
@@ -295,6 +303,7 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
         Cmd::Kill    { names, all } => commands::lifecycle::batch(commands::lifecycle::Verb::Kill,    names, *all),
         Cmd::Console { name }     => commands::console::run(name),
         Cmd::Ssh     { name }     => commands::info::ssh_exec(&cfg, name),
+        Cmd::Exec { name, cmd }   => commands::info::ssh_exec_cmd(&cfg, name, cmd),
 
         Cmd::Ls { json }          => commands::info::ls(*json),
         Cmd::Inspect { name }     => commands::info::inspect(name),

@@ -100,3 +100,24 @@ pub fn ssh_exec(cfg: &Config, name: &str) -> Result<()> {
     let target = format!("{user}@{ip}");
     crate::cmd::exec("ssh", [target.as_str()])
 }
+
+/// `qvm exec <vm> -- cmd args...` — one-off remote command. ssh replaces
+/// the qvm process so the remote command's exit code becomes qvm's.
+pub fn ssh_exec_cmd(cfg: &Config, name: &str, cmd: &[String]) -> Result<()> {
+    if cmd.is_empty() {
+        return Err(Error::User(
+            "exec needs a command. Use: qvm exec <vm> -- <cmd> [args...]".into()
+        ));
+    }
+    libvirt::require_running(name)?;
+    let ip = libvirt::ipv4(name).ok_or_else(||
+        Error::User("no IP yet - VM may still be booting.".into()))?;
+    let user = login_user_of(cfg, name).ok_or_else(||
+        Error::User(format!(
+            "login user for '{name}' unknown — was this VM created by qvm?"
+        )))?;
+    let target = format!("{user}@{ip}");
+    let mut args: Vec<String> = vec![target];
+    args.extend_from_slice(cmd);
+    crate::cmd::exec("ssh", args.iter().map(String::as_str))
+}
