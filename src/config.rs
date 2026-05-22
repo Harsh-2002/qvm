@@ -195,6 +195,19 @@ pub fn builtin_distros() -> BTreeMap<String, Distro> {
         ]),
     });
 
+    m.insert("ubuntu:26.04".into(), Distro {
+        osinfo: "ubuntu26.04".into(),
+        shell:  "/bin/bash".into(),
+        uefi:   false,
+        image:  None, url: None,
+        arch:   variants(&[
+            ("x86_64",  "ubuntu-26.04-amd64.qcow2",
+             "https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img"),
+            ("aarch64", "ubuntu-26.04-arm64.qcow2",
+             "https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img"),
+        ]),
+    });
+
     m.insert("debian:13".into(), Distro {
         osinfo: "debian12".into(),
         shell:  "/bin/bash".into(),
@@ -244,6 +257,59 @@ pub fn builtin_distros() -> BTreeMap<String, Distro> {
              "https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2"),
             ("aarch64", "rocky-9-arm64.qcow2",
              "https://download.rockylinux.org/pub/rocky/9/images/aarch64/Rocky-9-GenericCloud-Base.latest.aarch64.qcow2"),
+        ]),
+    });
+
+    m.insert("almalinux:9".into(), Distro {
+        osinfo: "almalinux9".into(),
+        shell:  "/bin/bash".into(),
+        uefi:   false,
+        image:  None, url: None,
+        arch:   variants(&[
+            ("x86_64",  "almalinux-9-amd64.qcow2",
+             "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"),
+            ("aarch64", "almalinux-9-arm64.qcow2",
+             "https://repo.almalinux.org/almalinux/9/cloud/aarch64/images/AlmaLinux-9-GenericCloud-latest.aarch64.qcow2"),
+        ]),
+    });
+
+    m.insert("opensuse:15.6".into(), Distro {
+        osinfo: "opensuseleap15.6".into(),
+        shell:  "/bin/bash".into(),
+        uefi:   false,
+        image:  None, url: None,
+        arch:   variants(&[
+            ("x86_64",  "opensuse-15.6-amd64.qcow2",
+             "https://download.opensuse.org/distribution/leap/15.6/appliances/openSUSE-Leap-15.6-Minimal-VM.x86_64-15.6.0-Cloud-Build19.146.qcow2"),
+            ("aarch64", "opensuse-15.6-arm64.qcow2",
+             "https://download.opensuse.org/distribution/leap/15.6/appliances/openSUSE-Leap-15.6-Minimal-VM.aarch64-15.6.0-Cloud-Build19.146.qcow2"),
+        ]),
+    });
+
+    m.insert("centos-stream:10".into(), Distro {
+        osinfo: "centos-stream10".into(),
+        shell:  "/bin/bash".into(),
+        uefi:   false,
+        image:  None, url: None,
+        arch:   variants(&[
+            ("x86_64",  "centos-stream-10-amd64.qcow2",
+             "https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-latest.x86_64.qcow2"),
+            ("aarch64", "centos-stream-10-arm64.qcow2",
+             "https://cloud.centos.org/centos/10-stream/aarch64/images/CentOS-Stream-GenericCloud-10-latest.aarch64.qcow2"),
+        ]),
+    });
+
+    // Arch ships only an x86_64 cloud image upstream and uses a rolling
+    // "latest" URL — a deliberate exception to §3.5 "stable URLs not
+    // dailies" because Arch has no pinned point releases for cloud images.
+    m.insert("arch".into(), Distro {
+        osinfo: "archlinux".into(),
+        shell:  "/bin/bash".into(),
+        uefi:   false,
+        image:  None, url: None,
+        arch:   variants(&[
+            ("x86_64",  "arch-amd64.qcow2",
+             "https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2"),
         ]),
     });
 

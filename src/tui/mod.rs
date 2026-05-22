@@ -177,6 +177,53 @@ fn handle_action(
             }
             app.refresh(cfg);
         }
+        Action::SnapshotsNew => {
+            let vm = app.snapshots.vm_name.clone();
+            if vm.is_empty() { return Ok(()); }
+            let snap_name = timestamp_snap_name();
+            match crate::commands::snap::create_silent(&vm, &snap_name, /*quiesce*/ false) {
+                Ok(()) => app.toast_ok(format!("Created snapshot '{snap_name}' on '{vm}'")),
+                Err(e) => app.toast_err(format!("snapshot create failed: {e}")),
+            }
+            app.refresh_snapshots();
+        }
+        Action::SnapshotsConfirm => {
+            // SUSPEND BOUNDARY: every snapshot op currently called from
+            // here (snapshot-create-as without --disk-only, snapshot-revert,
+            // snapshot-delete) is virsh metadata-only and sub-second, so
+            // running inline against the alt-screen is safe. If a future
+            // change adds an op that takes seconds — external `--disk-only`
+            // snapshots driving qemu-img convert, or `blockcommit` to merge
+            // an overlay back — that path MUST wrap the call in
+            // `suspend(terminal, || …)` like the create / resize / console
+            // paths above. Otherwise the screen will freeze with no progress.
+            use crate::tui::app::SnapshotConfirm;
+            let vm = app.snapshots.vm_name.clone();
+            let Some(snap) = app.snapshots.selected_snap().map(str::to_string) else {
+                app.snapshots.confirm = None;
+                return Ok(());
+            };
+            match app.snapshots.confirm {
+                Some(SnapshotConfirm::Revert) => {
+                    // run --inherit blocks ratatui; revert is fast (<1s typical).
+                    match crate::commands::snap::revert_silent(&vm, &snap, /*running*/ false) {
+                        Ok(()) => app.toast_ok(format!("Reverted '{vm}' to '{snap}'")),
+                        Err(e) => app.toast_err(format!("revert failed: {e}")),
+                    }
+                }
+                Some(SnapshotConfirm::Delete) => {
+                    match crate::commands::snap::remove_silent(&vm, &snap) {
+                        Ok(()) => app.toast_ok(format!("Deleted snapshot '{snap}'")),
+                        Err(e) => app.toast_err(format!("delete failed: {e}")),
+                    }
+                }
+                None => {} // no-op if somehow Confirm fires with no pending state
+            }
+            app.snapshots.confirm = None;
+            app.refresh_snapshots();
+            // Selected VM may have changed state (revert can shut down or start)
+            app.refresh(cfg);
+        }
         Action::SubmitResize => {
             let plan = match app.take_resize_args() {
                 Ok(p) => p,
@@ -265,4 +312,13 @@ fn apply_resize(
 
 fn io_err(e: std::io::Error) -> crate::error::Error {
     crate::error::Error::User(format!("terminal error: {e}"))
+}
+
+/// Auto-name for a snapshot taken via the TUI's [n] key. Format:
+/// `snap-YYYYMMDD-HHMMSS`. Shells out to `date` instead of pulling in
+/// chrono — the only consumer is this single function.
+fn timestamp_snap_name() -> String {
+    crate::cmd::run("date", ["+snap-%Y%m%d-%H%M%S"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "snap-unknown".into())
 }

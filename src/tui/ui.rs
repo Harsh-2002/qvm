@@ -225,6 +225,7 @@ fn draw_content(f: &mut Frame, area: Rect, app: &mut App) {
         Mode::ResizeForm => format!("  RESIZE {}  ", app.resize.vm_name),
         Mode::Help       => "  HELP  ".to_string(),
         Mode::EmptyState => "".to_string(),
+        Mode::Snapshots  => format!("  SNAPSHOTS — {}  ", app.snapshots.vm_name),
         _                => app.selected_name()
             .map(|n| format!("  {n}  "))
             .unwrap_or_default(),
@@ -245,6 +246,71 @@ fn draw_content(f: &mut Frame, area: Rect, app: &mut App) {
         Mode::ResizeForm => draw_resize(f, inner, app),
         Mode::Help       => draw_help(f, inner, t),
         Mode::EmptyState => draw_empty(f, inner, t),
+        Mode::Snapshots  => draw_snapshots(f, inner, app),
+    }
+}
+
+fn draw_snapshots(f: &mut Frame, area: Rect, app: &App) {
+    use crate::tui::app::SnapshotConfirm;
+    let t = &app.theme;
+    let sv = &app.snapshots;
+
+    if sv.snaps.is_empty() {
+        let p = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled("  no snapshots yet.", t.dim())),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  Press "),
+                Span::styled("[n]", t.accent()),
+                Span::raw(" to create one (auto-named with timestamp)."),
+            ]),
+        ]).wrap(Wrap { trim: false });
+        f.render_widget(p, area);
+        return;
+    }
+
+    let items: Vec<ListItem> = sv.snaps.iter().enumerate().map(|(i, name)| {
+        let prefix = if i == sv.selected { "› " } else { "  " };
+        let style = if i == sv.selected {
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+        } else {
+            t.text()
+        };
+        ListItem::new(Line::from(vec![
+            Span::styled(prefix, t.dim()),
+            Span::styled(name.clone(), style),
+        ]))
+    }).collect();
+
+    // Reserve a 2-line footer when a confirm is pending so the user sees
+    // exactly which action they're about to commit to.
+    let footer_h: u16 = if sv.confirm.is_some() { 2 } else { 0 };
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(footer_h)])
+        .split(area);
+
+    let list = List::new(items);
+    f.render_widget(list, layout[0]);
+
+    if let Some(c) = sv.confirm {
+        let (verb, name) = match c {
+            SnapshotConfirm::Revert => ("Revert", sv.selected_snap().unwrap_or("?")),
+            SnapshotConfirm::Delete => ("Delete", sv.selected_snap().unwrap_or("?")),
+        };
+        let msg = Line::from(vec![
+            Span::styled(" ", t.text()),
+            Span::styled(verb, Style::default().fg(t.warn).add_modifier(Modifier::BOLD)),
+            Span::raw(" snapshot "),
+            Span::styled(format!("'{name}'"), Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
+            Span::raw("? "),
+            Span::styled("[y]", t.accent()),
+            Span::raw("es / "),
+            Span::styled("[n]", t.accent()),
+            Span::raw("o"),
+        ]);
+        f.render_widget(Paragraph::new(vec![Line::from(""), msg]), layout[1]);
     }
 }
 
@@ -560,6 +626,8 @@ fn draw_help(f: &mut Frame, area: Rect, t: &Theme) {
         ("VM lifecycle", &[
             ("s · t · r",        "start · stop · restart selected"),
             ("c",                "create a new VM"),
+            ("m",                "modify CPU / RAM / disk"),
+            ("p",                "snapshots (list / create / revert / delete)"),
             ("d",                "delete selected (with confirmation)"),
         ]),
         ("View the console", &[
@@ -687,6 +755,22 @@ fn build_actions(app: &App) -> Vec<(&'static str, &'static str, bool)> {
             ("Enter", "Create", true),
             ("Esc",   "Cancel", true),
         ]
+    } else if matches!(app.mode, Mode::Snapshots) {
+        let has_sel = !app.snapshots.snaps.is_empty();
+        if app.snapshots.confirm.is_some() {
+            vec![
+                ("y",   "Confirm", true),
+                ("n",   "Cancel",  true),
+                ("Esc", "Cancel",  true),
+            ]
+        } else {
+            vec![
+                ("n",   "New",    true),
+                ("r",   "Revert", has_sel),
+                ("d",   "Delete", has_sel),
+                ("Esc", "Back",   true),
+            ]
+        }
     } else if matches!(app.mode, Mode::ResizeForm) {
         vec![
             ("Tab",   "Move",  true),
@@ -710,6 +794,7 @@ fn build_actions(app: &App) -> Vec<(&'static str, &'static str, bool)> {
             ("d", "Delete",   has_selection),
             ("c", "Create",   true),
             ("m", "Modify",   has_selection),
+            ("p", "Snapshots",has_selection),
             ("v", "VNC info", has_selection &&  running),
             ("/", "Filter",   true),
             ("o", "Sort",     true),

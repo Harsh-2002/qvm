@@ -206,13 +206,23 @@ VMs, not existing ones — we still prefer URLs that point at stable
 release channels rather than nightlies. The base URL for each built-in
 distro is reviewed when adding it:
 
-| Distro       | URL pattern                                             | Stability                          |
-|--------------|---------------------------------------------------------|------------------------------------|
-| ubuntu:24.04 | `releases/noble/release/ubuntu-24.04-server-...img`     | latest stable point release        |
-| debian:13    | `cloud/trixie/latest/debian-13-genericcloud-...qcow2`   | latest stable trixie point release |
-| fedora:42    | `releases/42/Cloud/.../Fedora-Cloud-Base-Generic-42-1.1`| pinned GA                          |
-| alpine:3.20  | `releases/cloud/...alpine-3.20.3-x86_64-uefi-r0.qcow2`  | pinned point release               |
-| rocky:9      | `images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64` | latest stable point release        |
+| Distro            | URL pattern                                                  | Stability                          |
+|-------------------|--------------------------------------------------------------|------------------------------------|
+| ubuntu:24.04      | `releases/noble/release/ubuntu-24.04-server-...img`          | latest stable point release        |
+| ubuntu:26.04      | `releases/26.04/release/ubuntu-26.04-server-...img`          | latest stable point release        |
+| debian:13         | `cloud/trixie/latest/debian-13-genericcloud-...qcow2`        | latest stable trixie point release |
+| fedora:42         | `releases/42/Cloud/.../Fedora-Cloud-Base-Generic-42-1.1`     | pinned GA                          |
+| alpine:3.20       | `releases/cloud/...alpine-3.20.3-x86_64-uefi-r0.qcow2`       | pinned point release               |
+| rocky:9           | `images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64`      | latest stable point release        |
+| almalinux:9       | `cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64` | latest stable point release        |
+| opensuse:15.6     | `appliances/openSUSE-Leap-15.6-Minimal-VM...Cloud-Build19.146`| pinned build                       |
+| centos-stream:10  | `10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-latest`| latest stable point release        |
+| arch              | `images/latest/Arch-Linux-x86_64-cloudimg.qcow2`             | rolling (x86_64 only — see note)  |
+
+Note: `arch` is a deliberate exception. Arch upstream publishes only an
+x86_64 cloud image and points `/latest/` at the most recent snapshot
+(rolling, no pinned point releases). Arch users expect this; the rest of
+the registry follows the stable-URL rule.
 
 ---
 

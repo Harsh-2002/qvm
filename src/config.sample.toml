@@ -37,8 +37,9 @@ ssh_keys = [
     # "ssh-ed25519 AAAA... you@laptop",
 ]
 
-# Custom distros (extend or override the baked-in 5).
-# Built-ins: ubuntu:24.04, debian:13, fedora:42, alpine:3.20, rocky:9
+# Custom distros (extend or override the baked-in 10).
+# Built-ins: ubuntu:24.04, ubuntu:26.04, debian:13, fedora:42, alpine:3.20,
+#            rocky:9, almalinux:9, opensuse:15.6, centos-stream:10, arch
 #
 # [distros."ubuntu:22.04"]
 # image  = "ubuntu-22.04.qcow2"

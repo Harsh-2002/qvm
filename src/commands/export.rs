@@ -236,7 +236,7 @@ fn live_export(name: &str, disk_src: &Path, staged_disk: &Path) -> Result<()> {
     Ok(())
 }
 
-fn stop_and_wait(name: &str) -> Result<()> {
+pub(crate) fn stop_and_wait(name: &str) -> Result<()> {
     libvirt::shutdown(name)?;
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while libvirt::is_running(name) && std::time::Instant::now() < deadline {
@@ -249,7 +249,7 @@ fn stop_and_wait(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn guest_agent_alive(name: &str) -> bool {
+pub(crate) fn guest_agent_alive(name: &str) -> bool {
     cmd::run("virsh", [
         "qemu-agent-command", name,
         r#"{"execute":"guest-ping"}"#,
@@ -257,7 +257,7 @@ fn guest_agent_alive(name: &str) -> bool {
     ]).is_ok()
 }
 
-fn require_guest_agent(name: &str) -> Result<()> {
+pub(crate) fn require_guest_agent(name: &str) -> Result<()> {
     if guest_agent_alive(name) { return Ok(()); }
     Err(Error::User(format!(
         "qemu-guest-agent is not responsive in '{name}'.\n  \
@@ -331,7 +331,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 // ── dominfo extraction (best-effort) ─────────────────────────────────────────
 
-fn dominfo_cpus(name: &str) -> Option<u32> {
+pub(crate) fn dominfo_cpus(name: &str) -> Option<u32> {
     let raw = libvirt::dominfo(name).ok()?;
     for line in raw.lines() {
         if let Some(v) = line.trim().strip_prefix("CPU(s):") {
@@ -341,7 +341,7 @@ fn dominfo_cpus(name: &str) -> Option<u32> {
     None
 }
 
-fn dominfo_memory_gb(name: &str) -> Option<u32> {
+pub(crate) fn dominfo_memory_gb(name: &str) -> Option<u32> {
     let raw = libvirt::dominfo(name).ok()?;
     // virsh prints "Max memory:     4194304 KiB"
     for line in raw.lines() {
@@ -356,7 +356,7 @@ fn dominfo_memory_gb(name: &str) -> Option<u32> {
     None
 }
 
-fn qemu_img_virtual_size_gb(disk: &Path) -> Option<u32> {
+pub(crate) fn qemu_img_virtual_size_gb(disk: &Path) -> Option<u32> {
     let out = cmd::run("qemu-img", [
         "info", "--output=human", disk.to_string_lossy().as_ref(),
     ]).ok()?;

@@ -70,6 +70,38 @@ enum Cmd {
         #[arg(short = 'f', long)] force: bool,
     },
 
+    /// Clone an existing VM into a new one. Auto-detects mode: live
+    /// (snapshot + blockcommit, zero downtime) when the source is
+    /// running with a responsive qemu-guest-agent; offline when the
+    /// source is stopped. Pass `--stop` to allow a brief downtime
+    /// instead. Recovers source's user + password hash from its
+    /// cloud-init seed; regenerates the seed with a fresh instance-id
+    /// so cloud-init re-runs (new hostname, fresh SSH host keys, new
+    /// machine-id).
+    Clone {
+        /// Source VM name.
+        src: String,
+        /// Destination VM name.
+        dst: String,
+        /// Force live clone via snapshot + blockcommit. Fails if the
+        /// source is stopped or qemu-guest-agent is not responsive.
+        #[arg(long, conflicts_with = "stop")] live: bool,
+        /// Stop the source before cloning, restart after. Use this if
+        /// you want a clean offline clone of a running VM that doesn't
+        /// have qemu-guest-agent installed.
+        #[arg(long)] stop: bool,
+        /// CPU count for the clone (defaults to source's).
+        #[arg(short = 'c', long)] cpus: Option<u32>,
+        /// RAM in GB for the clone (defaults to source's).
+        #[arg(short = 'm', long = "memory")] memory_gb: Option<u32>,
+        /// Disk in GB for the clone (defaults to source's; must be >= source).
+        #[arg(short = 's', long = "disk")] disk_gb: Option<u32>,
+        /// Do NOT autostart on host boot.
+        #[arg(long)] no_autostart: bool,
+        /// Disable nested virtualization for the clone.
+        #[arg(long)] no_nested: bool,
+    },
+
     /// Start one or more stopped VMs (or `--all`).
     Start   { names: Vec<String>, #[arg(long)] all: bool },
     /// Graceful shutdown of one or more VMs (or `--all`).
@@ -85,6 +117,14 @@ enum Cmd {
 
     /// SSH into a VM directly (resolves login user + IP, then execs ssh).
     Ssh     { name: String },
+
+    /// Run a one-off command in a VM over SSH. Use `--` to separate qvm
+    /// flags from the command, e.g. `qvm exec web01 -- uptime -p`.
+    Exec {
+        name: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd:  Vec<String>,
+    },
 
     /// List all VMs.
     #[command(alias = "ps")]
@@ -289,12 +329,30 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
         }
 
         Cmd::Rm { name, force }   => commands::delete::run(&cfg, name, *force),
+
+        Cmd::Clone { src, dst, live, stop, cpus, memory_gb, disk_gb, no_autostart, no_nested } => {
+            let mode = if *live { commands::clone::Mode::Live }
+                       else if *stop { commands::clone::Mode::Stop }
+                       else { commands::clone::Mode::Auto };
+            commands::clone::run(&cfg, commands::clone::Args {
+                src: src.clone(),
+                dst: dst.clone(),
+                mode,
+                cpus: *cpus,
+                memory_gb: *memory_gb,
+                disk_gb: *disk_gb,
+                no_autostart: *no_autostart,
+                nested: if *no_nested { Some(false) } else { None },
+            })
+        }
+
         Cmd::Start   { names, all } => commands::lifecycle::batch(commands::lifecycle::Verb::Start,   names, *all),
         Cmd::Stop    { names, all } => commands::lifecycle::batch(commands::lifecycle::Verb::Stop,    names, *all),
         Cmd::Restart { names, all } => commands::lifecycle::batch(commands::lifecycle::Verb::Restart, names, *all),
         Cmd::Kill    { names, all } => commands::lifecycle::batch(commands::lifecycle::Verb::Kill,    names, *all),
         Cmd::Console { name }     => commands::console::run(name),
         Cmd::Ssh     { name }     => commands::info::ssh_exec(&cfg, name),
+        Cmd::Exec { name, cmd }   => commands::info::ssh_exec_cmd(&cfg, name, cmd),
 
         Cmd::Ls { json }          => commands::info::ls(*json),
         Cmd::Inspect { name }     => commands::info::inspect(name),

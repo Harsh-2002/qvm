@@ -55,8 +55,8 @@ pull while VMs exist" to someone (including future you) at 2 AM.
 - List, inspect, get IP, get an SSH command, and **`qvm ssh <vm>`** that
   exec's ssh directly instead of just printing the command
 - `--json` output on `qvm ls`, `qvm distros`, `qvm images` for automation
-- Pull and list distro base images (5 baked in, more via config) — each
-  with **both amd64 and arm64 variants**
+- Pull and list distro base images (10 baked in, more via config) — each
+  with **both amd64 and arm64 variants** (Arch is x86_64-only upstream)
 - VNC connection info (replaces the need for Cockpit for graphical access)
 - Resource changes (CPU, RAM, disk grow)
 - **`qvm console <name>`** — drops into `virsh console` with proper TTY
@@ -161,8 +161,9 @@ src/
 │                      ipv4() looks via agent, then DHCP lease, then ARP.
 │                      undefine() handles UEFI NVRAM correctly.
 ├── config.rs          TOML schema, baked-in defaults, distro registry.
-│                      Five built-in distros, each with per-arch variants
-│                      (x86_64 + aarch64). User config layers over top.
+│                      Ten built-in distros, each with per-arch variants
+│                      (x86_64 + aarch64; arch is x86_64-only).
+│                      User config layers over top.
 ├── cloudinit.rs       Seed generator. write_files() then build_iso().
 │                      Split so tests can exercise file generation without
 │                      needing genisoimage.
@@ -443,13 +444,56 @@ sudo apt install musl-tools gcc-aarch64-linux-gnu
 cargo build --release --target aarch64-unknown-linux-musl
 ```
 
-The CI in `.github/workflows/build.yml` is a matrix that builds **both**
-`qvm-linux-amd64-static` and `qvm-linux-arm64-static` artifacts on every
-push and PR. A separate cleanup job prunes everything but the newest two
-artifacts per name, so storage doesn't grow unbounded.
+The CI in `.github/workflows/build.yml` runs tests + clippy and then
+cross-compiles both `x86_64-unknown-linux-musl` and
+`aarch64-unknown-linux-musl` on every push and PR **for compile-check
+only** — no artifacts are uploaded. Distribution happens via the
+separate release workflow described in § 7.1.
 
-CI deliberately does **not** create a GitHub release — that's a manual
-decision for now.
+### 7.1. Release policy
+
+There is **only ever one active GitHub Release at a time.** A new
+release replaces the old one — there is no version history kept on
+GitHub. This is deliberate: qvm is a thin tool on a fast-moving
+ecosystem (libvirt, qemu, distro images), and maintaining a long tail
+of "old qvm" downloads is more risk than value. Anyone who needs a
+specific historical build can rebuild from `git`.
+
+**Versioning is CalVer:** `YYYY.M.D` (no leading zeros) — e.g.
+`2026.5.22` for May 22 2026. The format is SemVer-shaped on purpose
+so Cargo accepts it directly:
+
+- The release workflow `sed`s `Cargo.toml` from `0.1.0` → `YYYY.M.D`
+  before building, so `qvm --version` reports the release version
+  exactly. Dev / local builds still show `0.1.0`.
+- The Git tag is `vYYYY.M.D` (e.g. `v2026.5.22`).
+
+**How a release happens:**
+
+1. Maintainer goes to Actions → `release` → "Run workflow" (manual
+   `workflow_dispatch` only — never on push).
+2. The workflow:
+   - computes today's UTC `YYYY.M.D`,
+   - bakes it into Cargo.toml,
+   - cross-compiles amd64 + arm64 static-musl binaries,
+   - smoke-tests the amd64 binary (`--version` must match),
+   - **deletes every existing GitHub Release and its tag**,
+   - creates `vYYYY.M.D` with both zips attached.
+3. `install.sh` fetches from
+   `https://github.com/<repo>/releases/latest/download/qvm-linux-<arch>-static.zip`
+   — that URL is a permanent redirect that always lands on whatever
+   the current release is.
+
+**Why "delete every prior release":** GitHub's "latest" pointer is
+sticky to whichever release has the highest semver-ish tag, not
+necessarily the newest mtime. Wiping all prior releases makes "the
+release" unambiguous and prevents `install.sh` from accidentally
+pinning to a stale build.
+
+**Same-day re-release:** if you need to ship twice in one day, edit
+the workflow's `Compute calendar version` step to append `.N` (e.g.
+`2026.5.22.2`) or run it from a branch with a manual override. The
+default path produces one release per UTC day.
 
 ---
 
