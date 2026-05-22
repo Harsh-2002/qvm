@@ -4,13 +4,18 @@
 # POSIX shell. No bashisms. Verify with `shellcheck -s sh install.sh`.
 #
 # Four jobs, nothing more:
-#   1. Install or update /usr/local/bin/qvm from the latest CI artifact.
+#   1. Install or update /usr/local/bin/qvm from the latest GitHub Release.
 #   2. Ensure host dependencies are present (via `qvm doctor --install`).
 #   3. Detect the user's shell and drop in completions.
 #   4. Print the source-reload command so completions are live immediately.
 #
 # Output is minimal on purpose. Configuration is NOT this script's job —
 # run `sudo qvm` after install for the interactive onboarding wizard.
+#
+# Releases follow CalVer (YYYY.M.D) and there is only ever one active
+# release at a time — see CLAUDE.md § Release policy. The URL below
+# pins to `releases/latest/download/…`, which GitHub redirects to
+# whatever the current release is, so this script never goes stale.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Harsh-2002/qvm/main/install.sh | sudo sh
@@ -38,7 +43,11 @@ case "$HOST_ARCH" in
     aarch64) ARTIFACT_NAME="qvm-linux-arm64-static" ;;
     *) die "unsupported arch '$HOST_ARCH' (qvm ships amd64 and arm64)." ;;
 esac
-ARTIFACT_URL="https://nightly.link/${REPO}/workflows/build/main/${ARTIFACT_NAME}.zip"
+# `releases/latest/download/` is a stable GitHub-side redirect — no need
+# to hit the API, no auth, works under `curl -L`. If no release exists
+# yet (fresh repo before the first release.yml run), curl returns 404
+# and the script aborts with a clear message.
+ARTIFACT_URL="https://github.com/${REPO}/releases/latest/download/${ARTIFACT_NAME}.zip"
 
 ACTION="installed"
 [ -x "$BIN" ] && ACTION="updated"
@@ -47,7 +56,9 @@ ACTION="installed"
 TMP="$(mktemp -d)"
 # shellcheck disable=SC2064
 trap "rm -rf '$TMP'" EXIT
-curl -fsSL -o "$TMP/qvm.zip" "$ARTIFACT_URL"
+if ! curl -fsSL -o "$TMP/qvm.zip" "$ARTIFACT_URL"; then
+    die "could not download $ARTIFACT_URL — has a release been cut yet? See https://github.com/${REPO}/releases"
+fi
 unzip -qo "$TMP/qvm.zip" -d "$TMP"
 chmod +x "$TMP/qvm"
 "$TMP/qvm" --version >/dev/null 2>&1 || die "binary failed sanity check."
