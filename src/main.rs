@@ -70,15 +70,26 @@ enum Cmd {
         #[arg(short = 'f', long)] force: bool,
     },
 
-    /// Clone an existing VM into a new one. Source must be stopped.
-    /// Recovers source's user + password hash from its cloud-init seed;
-    /// regenerates the seed with a fresh instance-id so cloud-init
-    /// re-runs (new hostname, fresh SSH host keys, new machine-id).
+    /// Clone an existing VM into a new one. Auto-detects mode: live
+    /// (snapshot + blockcommit, zero downtime) when the source is
+    /// running with a responsive qemu-guest-agent; offline when the
+    /// source is stopped. Pass `--stop` to allow a brief downtime
+    /// instead. Recovers source's user + password hash from its
+    /// cloud-init seed; regenerates the seed with a fresh instance-id
+    /// so cloud-init re-runs (new hostname, fresh SSH host keys, new
+    /// machine-id).
     Clone {
         /// Source VM name.
         src: String,
         /// Destination VM name.
         dst: String,
+        /// Force live clone via snapshot + blockcommit. Fails if the
+        /// source is stopped or qemu-guest-agent is not responsive.
+        #[arg(long, conflicts_with = "stop")] live: bool,
+        /// Stop the source before cloning, restart after. Use this if
+        /// you want a clean offline clone of a running VM that doesn't
+        /// have qemu-guest-agent installed.
+        #[arg(long)] stop: bool,
         /// CPU count for the clone (defaults to source's).
         #[arg(short = 'c', long)] cpus: Option<u32>,
         /// RAM in GB for the clone (defaults to source's).
@@ -319,10 +330,14 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
 
         Cmd::Rm { name, force }   => commands::delete::run(&cfg, name, *force),
 
-        Cmd::Clone { src, dst, cpus, memory_gb, disk_gb, no_autostart, no_nested } => {
+        Cmd::Clone { src, dst, live, stop, cpus, memory_gb, disk_gb, no_autostart, no_nested } => {
+            let mode = if *live { commands::clone::Mode::Live }
+                       else if *stop { commands::clone::Mode::Stop }
+                       else { commands::clone::Mode::Auto };
             commands::clone::run(&cfg, commands::clone::Args {
                 src: src.clone(),
                 dst: dst.clone(),
+                mode,
                 cpus: *cpus,
                 memory_gb: *memory_gb,
                 disk_gb: *disk_gb,

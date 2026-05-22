@@ -1,9 +1,19 @@
 //! `qvm clone <src> <dst>` — duplicate an existing VM.
 //!
-//! v1 scope: source must be **stopped**. Live cloning (snapshot +
-//! blockcommit, mirroring `qvm export --live`) is a future addition.
+//! Three modes (mirrors `qvm export`):
+//!   - **Live** (`--live`): take a `--quiesce` disk-only snapshot of the
+//!     running source, convert the now-read-only base into the clone's
+//!     disk, then `blockcommit --active --pivot` to merge the overlay
+//!     back. Crash-consistent, zero downtime. Requires a responsive
+//!     qemu-guest-agent in the source.
+//!   - **Stop** (`--stop`): if the source is running, shut it down
+//!     cleanly, convert, then restart it. Brief downtime on the source.
+//!   - **Auto** (default): live if source is running and the guest
+//!     agent answers; offline if source is stopped; **error** if the
+//!     source is running without an agent — caller must opt in to
+//!     either `--live` (fix the agent) or `--stop` (allow downtime).
 //!
-//! Mechanics:
+//! Mechanics common to all modes:
 //!   1. Resolve source's cpus/memory/disk from `virsh dominfo` + `qemu-img info`.
 //!   2. Recover the source's login user and password hash from the
 //!      cloud-init seed on disk (so the clone boots with the same
@@ -26,11 +36,24 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::libvirt;
 use crate::util::require_username;
+use std::path::Path;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Auto-detect: live if running + agent, offline if stopped,
+    /// error if running without agent.
+    Auto,
+    /// Force live; fail if not running or no guest agent.
+    Live,
+    /// Force offline; stop the running source then restart afterward.
+    Stop,
+}
 
 #[derive(Debug)]
 pub struct Args {
     pub src:       String,
     pub dst:       String,
+    pub mode:      Mode,
     pub cpus:      Option<u32>,
     pub memory_gb: Option<u32>,
     /// New disk size in GB. Must be >= source's disk; smaller errors out.
@@ -40,6 +63,8 @@ pub struct Args {
     pub nested:    Option<bool>,
 }
 
+enum Resolved { Live, Offline }
+
 pub fn run(cfg: &Config, a: Args) -> Result<()> {
     libvirt::require_defined(&a.src)?;
     libvirt::require_absent(&a.dst)?;
@@ -47,12 +72,36 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     require("qemu-img")?;
     require("genisoimage")?;
 
-    if libvirt::is_running(&a.src) {
-        return Err(Error::User(format!(
-            "source '{src}' is running. Stop it first:\n  qvm stop {src}",
-            src = a.src,
-        )));
-    }
+    let was_running = libvirt::is_running(&a.src);
+
+    let resolved = match a.mode {
+        Mode::Stop => Resolved::Offline,
+        Mode::Live => {
+            if !was_running {
+                return Err(Error::User(format!(
+                    "--live requires '{}' to be running. Start it first or drop --live.",
+                    a.src
+                )));
+            }
+            super::export::require_guest_agent(&a.src)?;
+            Resolved::Live
+        }
+        Mode::Auto => {
+            if !was_running {
+                Resolved::Offline
+            } else if super::export::guest_agent_alive(&a.src) {
+                Resolved::Live
+            } else {
+                return Err(Error::User(format!(
+                    "source '{src}' is running but qemu-guest-agent is not responsive.\n  \
+                     - install/start qemu-guest-agent in the guest, then retry, or\n  \
+                     - pass --stop to allow a brief downtime (stop + clone + restart), or\n  \
+                     - stop it manually first: qvm stop {src}",
+                    src = a.src,
+                )));
+            }
+        }
+    };
 
     // ── recover source's parameters ──────────────────────────────────────────
     let src_disk = cfg.vm_disk(&a.src);
@@ -117,12 +166,28 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     let dst_ci   = cfg.vm_ci_dir(&a.dst);
 
     // ── copy disk: FULL convert, no backing file ─────────────────────────────
-    println!("Cloning '{}' → '{}' ({src_disk_gb}G disk)...", a.src, a.dst);
-    run_inherit("qemu-img", [
-        "convert", "-p", "-O", "qcow2",
-        src_disk.to_str().unwrap(),
-        dst_disk.to_str().unwrap(),
-    ])?;
+    use crate::style as s;
+    let mode_label = match resolved { Resolved::Live => "live", Resolved::Offline => "offline" };
+    println!("{} cloning '{}' → '{}' ({src_disk_gb}G disk, {mode_label})",
+        s::label("clone:"), a.src, a.dst);
+
+    match resolved {
+        Resolved::Live => {
+            live_clone_disk(&a.src, &src_disk, &dst_disk)?;
+        }
+        Resolved::Offline => {
+            if was_running {
+                println!("{} stopping '{}' for clean clone...", s::label("clone:"), a.src);
+                super::export::stop_and_wait(&a.src)?;
+            }
+            run_inherit("qemu-img", [
+                "convert", "-p", "-O", "qcow2",
+                src_disk.to_str().unwrap(),
+                dst_disk.to_str().unwrap(),
+            ])?;
+        }
+    }
+
     if disk_gb > src_disk_gb {
         cmd_run("qemu-img", [
             "resize", "-q",
@@ -132,7 +197,7 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     }
 
     // ── fresh cloud-init seed (new instance-id triggers re-run) ──────────────
-    println!("Generating cloud-init seed for '{}'...", a.dst);
+    println!("{} generating cloud-init seed for '{}'...", s::label("clone:"), a.dst);
     Seed {
         vm_name: &a.dst,
         login_user: &user,
@@ -143,7 +208,7 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     }.build(&dst_ci, &dst_iso)?;
 
     // ── define + start ──────────────────────────────────────────────────────
-    println!("Defining and starting '{}'...", a.dst);
+    println!("{} defining and starting '{}'...", s::label("clone:"), a.dst);
     let memory_mb = (ram_gb as u64) * 1024;
     let cpus_str   = cpus.to_string();
     let memory_str = memory_mb.to_string();
@@ -185,11 +250,16 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     let autostart = !a.no_autostart && cfg.defaults.autostart;
     if autostart { libvirt::autostart_on(&a.dst)?; }
 
+    // ── restart the source if we stopped it for an offline clone ────────────
+    if matches!(resolved, Resolved::Offline) && was_running {
+        println!("{} restarting source '{}'", s::label("clone:"), a.src);
+        let _ = libvirt::start(&a.src);
+    }
+
     // ── summary ─────────────────────────────────────────────────────────────
-    use crate::style as s;
     println!();
     println!("{} {}",
-        s::ok("✓"), s::ok(format!("VM '{}' cloned from '{}'", a.dst, a.src)));
+        s::ok("✓"), s::ok(format!("VM '{}' cloned from '{}' ({mode_label})", a.dst, a.src)));
     println!(
         "  {} {cpus}   {} {ram_gb}G   {} {disk_gb}G   {} {user}",
         s::label("cpus"), s::label("ram"), s::label("disk"), s::label("user"),
@@ -197,6 +267,77 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
     println!();
     println!("  {} {dst}        {}", s::cmd("qvm ip"),      s::dim("# wait ~30s for cloud-init to re-run"), dst = a.dst);
     println!("  {} {dst}   {}",      s::cmd("qvm ssh-cmd"), s::dim("# same login as source"), dst = a.dst);
+    Ok(())
+}
+
+// ── live mode disk copy (AWS-EBS-style snapshot + blockcommit) ───────────────
+//
+// Steps, in order, with the same error-recovery posture as
+// `export::live_export`:
+//
+//   1. `virsh snapshot-create-as --disk-only --quiesce` on the source.
+//      An overlay file captures writes that arrive during the clone;
+//      the original disk freezes read-only.
+//   2. `qemu-img convert` the frozen original into the destination disk.
+//      No backing file (invariant 3.1).
+//   3. `virsh blockcommit --active --pivot` to merge the overlay back
+//      into the source's original disk so the source is no longer
+//      running on an overlay.
+//
+// If step 2 fails, we abort any in-progress block job, drop the overlay
+// and the partial dst, and surface a clear error pointing at --stop.
+// If step 3 fails, the source is left on the overlay; we surface a
+// LOUD error with manual recovery instructions rather than silently
+// pretending everything's fine — same policy as export.
+fn live_clone_disk(src_name: &str, src_disk: &Path, dst_disk: &Path) -> Result<()> {
+    let overlay = src_disk.with_extension("clone-overlay.qcow2");
+    let _ = std::fs::remove_file(&overlay);
+
+    let diskspec = format!("vda,file={}", overlay.display());
+    cmd_run("virsh", [
+        "snapshot-create-as", src_name, "_qvm_clone",
+        "--disk-only", "--quiesce", "--no-metadata",
+        "--diskspec", &diskspec,
+    ]).map_err(|e| Error::User(format!(
+        "live snapshot failed: {e}\n  - rerun with --stop for the offline path."
+    )))?;
+
+    let convert_res = run_inherit("qemu-img", [
+        "convert", "-p", "-O", "qcow2",
+        src_disk.to_str().unwrap(),
+        dst_disk.to_str().unwrap(),
+    ]);
+
+    // Always attempt pivot — leaving the source on the overlay is worse
+    // than failing the clone.
+    let pivot_res = run_inherit("virsh", [
+        "blockcommit", src_name, "vda",
+        "--active", "--pivot",
+        "--base", src_disk.to_str().unwrap(),
+        "--top",  overlay.to_str().unwrap(),
+    ]);
+
+    if convert_res.is_err() {
+        let _ = cmd_run("virsh", ["blockjob", src_name, "vda", "--abort"]);
+        let _ = std::fs::remove_file(&overlay);
+        let _ = std::fs::remove_file(dst_disk);
+        return Err(Error::User(
+            "live clone: disk convert failed mid-snapshot. \
+             Source has been restored. Rerun with --stop for a clean offline clone.".into()
+        ));
+    }
+    if pivot_res.is_err() {
+        return Err(Error::User(format!(
+            "live clone: snapshot was taken and clone disk was written, but \
+             blockcommit --pivot failed. The SOURCE '{src_name}' is RUNNING ON \
+             THE OVERLAY at {}. Clone disk is at {}. Recover the source with:\n  \
+             virsh blockjob {src_name} vda --abort\n  \
+             qvm stop {src_name} ; qvm start {src_name}\n\
+             Or merge manually: virsh blockcommit {src_name} vda --active --pivot.",
+             overlay.display(), dst_disk.display(),
+        )));
+    }
+    let _ = std::fs::remove_file(&overlay);
     Ok(())
 }
 
@@ -248,4 +389,3 @@ pub fn extract_osinfo(xml: &str) -> Option<String> {
         None
     }
 }
-
