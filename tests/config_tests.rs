@@ -193,6 +193,44 @@ fn vm_path_accessors_join_under_configured_dirs() {
 }
 
 #[test]
+fn ssh_keys_at_top_level_parse_normally() {
+    // The fixed layout: top-level `ssh_keys` before any [section].
+    let f = write_tmp(r#"
+ssh_keys = [
+    "ssh-ed25519 AAAA top@host",
+    "ssh-rsa BBBB other@host",
+]
+
+[paths]
+images = "/tmp/imgs"
+"#);
+    let cfg = Config::load(Some(f.path())).unwrap();
+    assert_eq!(cfg.ssh_keys.len(), 2);
+    assert_eq!(cfg.ssh_keys[0], "ssh-ed25519 AAAA top@host");
+}
+
+#[test]
+fn ssh_keys_misplaced_under_section_are_rescued() {
+    // The old broken layout we used to write: `ssh_keys = [...]` placed
+    // AFTER `[tui]` with no intervening header. TOML quietly parses
+    // that as `tui.ssh_keys`. Config::load must rescue it.
+    let f = write_tmp(r#"
+[paths]
+images = "/tmp/imgs"
+
+[tui]
+theme = "mocha"
+
+ssh_keys = [
+    "ssh-ed25519 AAAA buried@under-tui",
+]
+"#);
+    let cfg = Config::load(Some(f.path())).unwrap();
+    assert_eq!(cfg.ssh_keys.len(), 1, "rescue should pull keys back to top level");
+    assert_eq!(cfg.ssh_keys[0], "ssh-ed25519 AAAA buried@under-tui");
+}
+
+#[test]
 fn sample_toml_parses_without_overriding_defaults_unexpectedly() {
     // The sample shipped with `qvm init` should be valid TOML and
     // not silently change behaviour from baked-in defaults

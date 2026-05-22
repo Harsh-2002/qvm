@@ -1,6 +1,14 @@
 # qvm config - everything here is optional; baked-in defaults apply if omitted.
 # Edit then re-run `qvm init` to download the baseline images.
 
+# SSH public keys injected for both the created login user AND root.
+# IMPORTANT: this is a top-level key — it MUST stay above every [section]
+# header below, otherwise TOML parses it as part of the preceding table
+# (e.g. `tui.ssh_keys`) and qvm silently ships VMs without your keys.
+ssh_keys = [
+    # "ssh-ed25519 AAAA... you@laptop",
+]
+
 [paths]
 images    = "/var/lib/qvm/images"      # base distro qcow2 cache
 vms       = "/var/lib/qvm/vms"         # per-VM disks (self-contained)
@@ -31,11 +39,6 @@ bind = "127.0.0.1"                     # "0.0.0.0" to expose on LAN (no auth by 
 
 [tui]
 theme = "mocha"                        # "mocha" (dark, default) or "latte" (light)
-
-# SSH public keys injected for both the created login user AND root.
-ssh_keys = [
-    # "ssh-ed25519 AAAA... you@laptop",
-]
 
 # Custom distros (extend or override the baked-in 10).
 # Built-ins: ubuntu:24.04, ubuntu:26.04, debian:13, fedora:42, alpine:3.20,
