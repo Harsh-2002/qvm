@@ -209,6 +209,7 @@ distro is reviewed when adding it:
 | Distro            | URL pattern                                                  | Stability                          |
 |-------------------|--------------------------------------------------------------|------------------------------------|
 | ubuntu:24.04      | `releases/noble/release/ubuntu-24.04-server-...img`          | latest stable point release        |
+| ubuntu:26.04      | `releases/26.04/release/ubuntu-26.04-server-...img`          | latest stable point release        |
 | debian:13         | `cloud/trixie/latest/debian-13-genericcloud-...qcow2`        | latest stable trixie point release |
 | fedora:42         | `releases/42/Cloud/.../Fedora-Cloud-Base-Generic-42-1.1`     | pinned GA                          |
 | alpine:3.20       | `releases/cloud/...alpine-3.20.3-x86_64-uefi-r0.qcow2`       | pinned point release               |

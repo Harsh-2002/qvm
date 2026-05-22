@@ -195,6 +195,19 @@ pub fn builtin_distros() -> BTreeMap<String, Distro> {
         ]),
     });
 
+    m.insert("ubuntu:26.04".into(), Distro {
+        osinfo: "ubuntu26.04".into(),
+        shell:  "/bin/bash".into(),
+        uefi:   false,
+        image:  None, url: None,
+        arch:   variants(&[
+            ("x86_64",  "ubuntu-26.04-amd64.qcow2",
+             "https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img"),
+            ("aarch64", "ubuntu-26.04-arm64.qcow2",
+             "https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img"),
+        ]),
+    });
+
     m.insert("debian:13".into(), Distro {
         osinfo: "debian12".into(),
         shell:  "/bin/bash".into(),

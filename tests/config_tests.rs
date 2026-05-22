@@ -27,6 +27,7 @@ fn empty_file_uses_defaults_and_baked_distros() {
     let cfg = Config::load(Some(f.path())).unwrap();
     assert_eq!(cfg.network.bridge, "br0");
     assert!(cfg.distros.contains_key("ubuntu:24.04"));
+    assert!(cfg.distros.contains_key("ubuntu:26.04"));
     assert!(cfg.distros.contains_key("debian:13"));
     assert!(cfg.distros.contains_key("alpine:3.20"));
     assert!(cfg.distros.contains_key("fedora:42"));
@@ -174,7 +175,7 @@ fn builtin_distros_alpine_uses_uefi_and_sh() {
 fn builtin_distros_others_are_bios_and_bash() {
     let m = builtin_distros();
     for key in [
-        "ubuntu:24.04", "debian:13", "fedora:42", "rocky:9",
+        "ubuntu:24.04", "ubuntu:26.04", "debian:13", "fedora:42", "rocky:9",
         "almalinux:9", "opensuse:15.6", "centos-stream:10", "arch",
     ] {
         let d = m.get(key).unwrap();
@@ -201,6 +202,6 @@ fn sample_toml_parses_without_overriding_defaults_unexpectedly() {
     let cfg = Config::load(Some(f.path())).expect("sample must parse");
     // Sample has bridge "br0" same as default
     assert_eq!(cfg.network.bridge, "br0");
-    // Sample has all 9 baked distros in the registry
-    assert!(cfg.distros.len() >= 9);
+    // Sample has all 10 baked distros in the registry
+    assert!(cfg.distros.len() >= 10);
 }
