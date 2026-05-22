@@ -1,7 +1,7 @@
 //! Step-by-step onboarding wizard.
 //!
 //! Triggered when `qvm` is launched with no subcommand AND
-//! `/etc/qvm/config.toml` does not exist. Replaces the old
+//! `/etc/qvm/config.yml` does not exist. Replaces the old
 //! "Config not found. Run: sudo qvm init" error with a guided seven-
 //! screen flow that hands a fresh host from "qvm just installed" to
 //! "first VM running" without gaps.
@@ -1003,7 +1003,7 @@ fn draw_done(f: &mut Frame, area: Rect, app: &OnboardApp) {
             Style::default().fg(t.ok).add_modifier(Modifier::BOLD))).alignment(Alignment::Center),
         Line::raw(""),
         Line::from(Span::styled(
-            "On [Enter], the config will be written to /etc/qvm/config.toml and the main TUI will open.",
+            "On [Enter], the config will be written to /etc/qvm/config.yml and the main TUI will open.",
             Style::default().fg(t.text_dim))).alignment(Alignment::Center),
         Line::raw(""),
         Line::from(Span::styled("Quick-start:",

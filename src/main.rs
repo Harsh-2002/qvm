@@ -15,7 +15,7 @@ use std::process::ExitCode;
     long_about = None,
 )]
 struct Cli {
-    /// Path to config file (defaults to /etc/qvm/config.toml).
+    /// Path to config file (defaults to /etc/qvm/config.yml).
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
@@ -28,7 +28,7 @@ struct Cli {
 #[allow(clippy::enum_variant_names)]
 enum Cmd {
     /// First-run setup: launches the TUI onboarding wizard. Writes
-    /// /etc/qvm/config.toml and prepares dirs.
+    /// /etc/qvm/config.yml and prepares dirs.
     Init {
         /// Non-interactive: skip the wizard and write default config.
         #[arg(long, short = 'y')]
@@ -270,7 +270,7 @@ fn main() -> ExitCode {
     }
 
     let cfg_path = cli.config.clone()
-        .unwrap_or_else(|| PathBuf::from("/etc/qvm/config.toml"));
+        .unwrap_or_else(|| PathBuf::from("/etc/qvm/config.yml"));
 
     match dispatch(&cli, &cfg_path) {
         Ok(()) => ExitCode::SUCCESS,
@@ -290,7 +290,7 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
         if !cfg_path.exists() {
             // First-run experience. Guides through bridge, SSH keys,
             // storage paths and (optionally) a first image pull, then
-            // writes /etc/qvm/config.toml. Falls back to the old
+            // writes /etc/qvm/config.yml. Falls back to the old
             // text-only error if the TUI can't open (no PTY, etc).
             if let Err(e) = qvm::tui::onboard::run(cfg_path) {
                 return Err(qvm::error::Error::User(format!(

@@ -55,8 +55,8 @@ to verify.
 | ![CentOS](https://img.shields.io/badge/CentOS%20Stream-10-262577?logo=centos&logoColor=white) | `centos-stream:10` | BIOS | [qcow2](https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-latest.x86_64.qcow2) | [qcow2](https://cloud.centos.org/centos/10-stream/aarch64/images/CentOS-Stream-GenericCloud-10-latest.aarch64.qcow2) |
 | ![Arch](https://img.shields.io/badge/Arch%20Linux-rolling-1793D1?logo=archlinux&logoColor=white) | `arch` | BIOS | [qcow2](https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2) | — |
 
-Want a distro not listed? Add a `[distros."your:key"]` block to
-`/etc/qvm/config.toml` — no code change required (see
+Want a distro not listed? Add a `distros: { "your:key": { ... } }` entry to
+`/etc/qvm/config.yml` — no code change required (see
 `ARCHITECTURE.md` §8).
 
 ## Docs

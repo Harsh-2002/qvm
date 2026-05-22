@@ -171,7 +171,7 @@ If your code mentions a distro name in a conditional, it's wrong.
 
 - Distro data (image filename, osinfo id, login shell, UEFI flag,
   download URL) lives in `src/config.rs::builtin_distros()` plus
-  user-added entries in `/etc/qvm/config.toml`.
+  user-added entries in `/etc/qvm/config.yml`.
 - Distro behaviour differences (systemd vs OpenRC, update-grub vs
   grub2-mkconfig, apt vs dnf vs apk) are resolved **inside the guest**
   by a generic first-boot script. The script feature-detects with
@@ -688,14 +688,15 @@ pub struct Distro {
 
 To add a sixth distro:
 
-```toml
-# /etc/qvm/config.toml
-[distros."ubuntu:22.04"]
-image  = "ubuntu-22.04.qcow2"
-osinfo = "ubuntu22.04"
-shell  = "/bin/bash"
-uefi   = false
-url    = "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
+```yaml
+# /etc/qvm/config.yml
+distros:
+  "ubuntu:22.04":
+    image:  ubuntu-22.04.qcow2
+    osinfo: ubuntu22.04
+    shell:  /bin/bash
+    uefi:   false
+    url:    https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
 ```
 
 That's it. No Rust changes, no recompile, no testing.
@@ -1016,15 +1017,16 @@ stderr is the actual content.
 
 ### Adding a new distro
 
-Edit `/etc/qvm/config.toml`:
+Edit `/etc/qvm/config.yml`:
 
-```toml
-[distros."alpine:3.21"]
-image  = "alpine-3.21.qcow2"
-osinfo = "alpinelinux3.21"
-shell  = "/bin/sh"
-uefi   = true
-url    = "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.0-x86_64-uefi-cloudinit-r0.qcow2"
+```yaml
+distros:
+  "alpine:3.21":
+    image:  alpine-3.21.qcow2
+    osinfo: alpinelinux3.21
+    shell:  /bin/sh
+    uefi:   true
+    url:    https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.0-x86_64-uefi-cloudinit-r0.qcow2
 ```
 
 Run `qvm pull alpine:3.21`. Done. No code changes.

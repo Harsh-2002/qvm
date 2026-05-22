@@ -1,0 +1,30 @@
+# qvm config. Every key is optional — omit any line to keep the default.
+
+ssh_keys: []
+
+paths:
+  images:    /var/lib/qvm/images
+  vms:       /var/lib/qvm/vms
+  cloudinit: /var/lib/qvm/cloudinit
+
+network:
+  bridge: br0
+
+defaults:
+  distro:       debian:13
+  cpus:         2
+  memory_gb:    4
+  disk_gb:      50
+  autostart:    true
+  grub_timeout: 0          # 0 = instant boot; null to keep distro default
+  nested:       true       # vmx/svm passthrough; false → host-model -vmx -svm
+
+vnc:
+  bind: 127.0.0.1
+
+tui:
+  theme: mocha             # mocha | latte
+
+motd:
+  enable: true
+  color:  auto             # auto | always | never

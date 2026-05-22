@@ -140,8 +140,9 @@ These are non-negotiable and reflected in tests:
    we prefer URLs that point at point releases (e.g., Debian's
    `cloud/trixie/latest/` symlink to the latest stable, not
    `cloud/trixie/daily/latest/`).
-6. **Config is single-file TOML.** One place to look. Defaults baked into
-   the binary; any field overridable in `/etc/qvm/config.toml`.
+6. **Config is single-file YAML.** One place to look. Defaults baked into
+   the binary; any field overridable in `/etc/qvm/config.yml`. Migrated
+   from TOML on 2026-05-22 — see decision-log § 5 ("Why YAML for config").
 
 ---
 
@@ -234,13 +235,35 @@ src/tui/
 
 ## 5. Decision log
 
-### Why TOML for config and not YAML
+### Why YAML for config (was: TOML, migrated 2026-05-22)
 
-YAML is more familiar to cloud-init users but has whitespace traps and
-ambiguities (`no` parses as boolean false in YAML 1.1). TOML has one obvious
-way to write things and Cargo/rustup already establish the file format in
-the user's mental model. The cloud-init user-data we emit is YAML — we have
-to write YAML — but the *config* the user edits is TOML.
+Originally TOML — picked because it's whitespace-insensitive and Cargo
+establishes it in Rust users' mental model. After ~6 months of use the
+trade-offs flipped:
+
+- **TOML's section-order trap bit us hard.** `qvm init` wrote
+  `ssh_keys = [...]` after `[tui]` with no intervening table header, so
+  TOML parsed it as `tui.ssh_keys` and silently dropped it. Every VM
+  shipped with empty `ssh-authorized-keys` for months — see commit
+  `b5ea85a fix(config): rescue ssh_keys nested under [section]`. The fix
+  required a runtime rescue path. YAML simply doesn't have this failure
+  mode: nesting is explicit (`tui:` then `  theme:`), no ambiguity.
+- **Hierarchical sections are more natural in YAML.** `motd.colors.label`
+  is `motd: { colors: { label: ... } }` — TOML's `[motd.colors]` syntax
+  for the same shape is more line-noise.
+- **Format consistency.** qvm already emits YAML for cloud-init user-data
+  (`cloudinit.rs`). Operators read/edit one format instead of two.
+
+We accept YAML's whitespace sensitivity as the price. `serde_yaml` uses
+YAML 1.2, so the historical "norway problem" (`no` → `false`) doesn't
+apply.
+
+The `qvm-meta.toml` sidecar inside `.qvm.tar` archives stays TOML — it's
+internal metadata, flat (no nesting), and not user-edited.
+
+The `serde_yaml` crate is upstream-deprecated by its author (without a
+successor named); a clean drop-in fork (`serde_yml`) exists and we'll
+swap to it the day it becomes a maintenance issue. Not blocking today.
 
 ### Why no `anyhow` / `eyre`
 

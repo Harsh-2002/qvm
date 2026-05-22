@@ -14,7 +14,9 @@ pub enum Error {
     },
     /// I/O failure (config read, qcow2 path, etc.).
     Io(std::io::Error),
-    /// TOML parsing.
+    /// YAML parsing — user config.
+    Yaml(serde_yaml::Error),
+    /// TOML parsing — only the export/import qvm-meta sidecar uses TOML now.
     Toml(toml::de::Error),
 }
 
@@ -30,7 +32,8 @@ impl fmt::Display for Error {
                 }
             }
             Error::Io(e) => write!(f, "{e}"),
-            Error::Toml(e) => write!(f, "config parse error: {e}"),
+            Error::Yaml(e) => write!(f, "config parse error: {e}"),
+            Error::Toml(e) => write!(f, "metadata parse error: {e}"),
         }
     }
 }
@@ -39,6 +42,9 @@ impl std::error::Error for Error {}
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self { Error::Io(e) }
+}
+impl From<serde_yaml::Error> for Error {
+    fn from(e: serde_yaml::Error) -> Self { Error::Yaml(e) }
 }
 impl From<toml::de::Error> for Error {
     fn from(e: toml::de::Error) -> Self { Error::Toml(e) }

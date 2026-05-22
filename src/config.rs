@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_CONFIG_PATH: &str = "/etc/qvm/config.toml";
+const DEFAULT_CONFIG_PATH: &str = "/etc/qvm/config.yml";
+/// Legacy TOML path. Detected by `Config::load` only to emit a clear
+/// migration hint — never parsed.
+const LEGACY_CONFIG_PATH: &str = "/etc/qvm/config.toml";
 
 /// Top-level config. Every field has a default, so the entire file is optional.
 #[derive(Debug, Clone, Deserialize)]
@@ -390,20 +393,20 @@ impl Config {
         let p = path.unwrap_or_else(|| Path::new(DEFAULT_CONFIG_PATH));
         let mut cfg = if p.exists() {
             let raw = fs::read_to_string(p)?;
-            let parsed: Config = toml::from_str(&raw)?;
-            // Recover ssh_keys that landed under a [section] because the
-            // file places `ssh_keys = [...]` after the last table header
-            // (a TOML gotcha — bare keys after a `[section]` belong to
-            // that section). Older `qvm init` wrote the file in this
-            // order. We rescue the array and warn the user.
-            let mut out = parsed;
-            if out.ssh_keys.is_empty() {
-                if let Some(rescued) = rescue_misplaced_ssh_keys(&raw, p) {
-                    out.ssh_keys = rescued;
-                }
-            }
-            out
+            serde_yaml::from_str(&raw)?
         } else {
+            // No new config file. If the user has a leftover TOML file from
+            // before the YAML migration, point them at it once. We only
+            // emit the notice when the resolved path matches the default
+            // — if the operator explicitly passed --config /elsewhere.yml,
+            // legacy state at the system default is irrelevant.
+            if p == Path::new(DEFAULT_CONFIG_PATH) && Path::new(LEGACY_CONFIG_PATH).exists() {
+                eprintln!(
+                    "qvm: notice — {LEGACY_CONFIG_PATH} exists but qvm now reads {}.\n\
+                     qvm: run `qvm init --force` to regenerate, or rename the file by hand.",
+                    DEFAULT_CONFIG_PATH,
+                );
+            }
             Config::default()
         };
         // If user defined no distros in the file, give them the baked-in set.
@@ -463,43 +466,6 @@ impl Config {
 }
 
 /// Render the bootstrap config that `qvm init` writes if none exists.
-pub fn sample_toml() -> &'static str {
-    include_str!("config.sample.toml")
-}
-
-/// Walk the raw TOML and look for an `ssh_keys` array of strings that
-/// has accidentally been nested under some `[section]` because of bad
-/// key ordering in the file (e.g. `ssh_keys = [...]` written after
-/// `[tui]`). Returns the rescued list and warns once on stderr so the
-/// operator knows to fix the file.
-///
-/// Why this lives outside `Config::load`: the structured `Config` has
-/// already eaten the misplaced array as e.g. `tui.ssh_keys` and dropped
-/// it on the floor (the `Tui` struct has no such field). We re-parse
-/// the raw text into a generic `toml::Value`, walk every table, and
-/// pluck any `ssh_keys: [string, ...]` we find at depth 1.
-fn rescue_misplaced_ssh_keys(raw: &str, src: &Path) -> Option<Vec<String>> {
-    let value: toml::Value = toml::from_str(raw).ok()?;
-    let table = value.as_table()?;
-    for (section, val) in table {
-        let inner = match val.as_table() {
-            Some(t) => t,
-            None => continue,
-        };
-        let arr = match inner.get("ssh_keys").and_then(|v| v.as_array()) {
-            Some(a) => a,
-            None => continue,
-        };
-        let keys: Vec<String> = arr.iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect();
-        if keys.is_empty() { continue; }
-        eprintln!(
-            "qvm: warning — `ssh_keys` in {} is nested under [{}]; recovering it as top-level.\n\
-             qvm: fix: move the `ssh_keys = [...]` block ABOVE the first [section] header in the file.",
-            src.display(), section,
-        );
-        return Some(keys);
-    }
-    None
+pub fn sample_yaml() -> &'static str {
+    include_str!("config.sample.yml")
 }
