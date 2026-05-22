@@ -89,4 +89,22 @@ impl TextInput {
         self.value.clear();
         self.cursor = 0;
     }
+
+    /// Returns the slice of `value` that fits in `width` columns, plus
+    /// the cursor's column within that slice. Scrolls so the cursor is
+    /// always inside the visible window — long inputs (SSH keys, IP
+    /// strings) no longer hide their cursor offscreen.
+    ///
+    /// `width == 0` returns an empty string + cursor 0 (graceful no-op
+    /// for tiny render rects).
+    pub fn visible(&self, width: usize) -> (String, usize) {
+        let chars: Vec<char> = self.value.chars().collect();
+        let len = chars.len();
+        if width == 0 { return (String::new(), 0); }
+        let cursor = self.cursor.min(len);
+        let start = if cursor >= width { cursor + 1 - width } else { 0 };
+        let end   = (start + width).min(len);
+        let slice: String = chars[start..end].iter().collect();
+        (slice, cursor - start)
+    }
 }

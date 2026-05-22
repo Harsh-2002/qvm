@@ -465,12 +465,17 @@ fn draw_create(f: &mut Frame, area: Rect, app: &App) {
     );
 
     let labels = ["Name", "Distro", "CPUs", "RAM (GB)", "Disk (GB)",
-                  "User", "Password", "Nested virt"];
+                  "User", "Password", "Nested virt",
+                  "Upgrade", "Swap", "Static IP", "Gateway"];
+    // Available width for the value column: total - bullet (2) - label
+    // (11) - right margin (2). Used for cursor-scrolling on long text
+    // fields like Static IP (10.1.1.50/24) or pasted SSH-style values.
+    let val_width = (inner.width as usize).saturating_sub(2 + 11 + 2);
     for (i, label) in labels.iter().enumerate() {
         let focused = i == c.field;
         let bullet = if focused { "▸ " } else { "  " };
         let label_pad = format!("{:<11}", label);
-        let value = field_value(c, i);
+        let value = field_value(c, i, val_width);
         let label_style = if focused { t.accent() } else { t.dim() };
         let line = Line::from(vec![
             Span::styled(bullet, label_style),
@@ -534,9 +539,9 @@ fn draw_resize(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn field_value(c: &CreateForm, i: usize) -> String {
+fn field_value(c: &CreateForm, i: usize, width: usize) -> String {
     match i {
-        0 => c.name.value.clone(),
+        0 => c.name.visible(width).0,
         1 => match c.distros.get(c.distro_idx) {
             Some(name) => {
                 let pulled = c.distro_pulled.get(c.distro_idx).copied().unwrap_or(false);
@@ -545,22 +550,44 @@ fn field_value(c: &CreateForm, i: usize) -> String {
             }
             None => String::new(),
         },
-        2 => c.cpus.value.clone(),
-        3 => c.memory_gb.value.clone(),
-        4 => c.disk_gb.value.clone(),
+        2 => c.cpus.visible(width).0,
+        3 => c.memory_gb.visible(width).0,
+        4 => c.disk_gb.visible(width).0,
         5 => {
             let v = &c.user.value;
-            if v.trim().is_empty() { "(required — no default)".into() } else { v.clone() }
+            if v.trim().is_empty() { "(required — no default)".into() }
+            else { c.user.visible(width).0 }
         }
         6 => {
             // Mask the password as bullets so onlookers can't read it.
             let n = c.password.value.chars().count();
-            if n == 0 { "(required — no default)".into() } else { "•".repeat(n) }
+            if n == 0 { "(required — no default)".into() }
+            else { "•".repeat(n.min(width)) }
         }
         7 => {
             // Nested virt checkbox. `Space` / `←` / `→` toggle it.
             if c.nested { "[x] enabled  (host-passthrough)" .into() }
             else        { "[ ] disabled (host-model -vmx -svm)".into() }
+        }
+        8 => {
+            // Run package_upgrade on first boot. `Space` toggles.
+            if c.upgrade { "[x] enabled  (apt/dnf/apk/pacman upgrade — slower boot)".into() }
+            else         { "[ ] disabled (skip upgrade — default)".into() }
+        }
+        9 => {
+            if c.swap.value.trim().is_empty() {
+                "(blank = no swap; e.g. 1G, 512M, 2GB)".into()
+            } else { c.swap.visible(width).0 }
+        }
+        10 => {
+            if c.ip.value.trim().is_empty() {
+                "(blank = DHCP; e.g. 10.1.1.50/24)".into()
+            } else { c.ip.visible(width).0 }
+        }
+        11 => {
+            if c.gateway.value.trim().is_empty() {
+                "(required when Static IP is set; e.g. 10.1.1.1)".into()
+            } else { c.gateway.visible(width).0 }
         }
         _ => String::new(),
     }
@@ -572,15 +599,28 @@ fn place_create_cursor(f: &mut Frame, app: &App, body: Rect) {
     // create form. The form is rendered with margin (2,1) inside the
     // content pane block. Field rows start at body.y + 2 (inside block) +
     // 2 (margin) + 0 (form header line) = body.y + 4.
+    //
+    // Cursor placement must agree with `field_value` on the visible
+    // window width: use the SAME formula here as in `draw_create`.
     let c = &app.create;
-    let off = match c.field {
-        0 => c.name.cursor,
-        2 => c.cpus.cursor,
-        3 => c.memory_gb.cursor,
-        4 => c.disk_gb.cursor,
-        5 if !c.user.value.trim().is_empty() => c.user.cursor,
-        6 if !c.password.value.is_empty() => c.password.cursor,
-        // field 7 (nested) has no text cursor.
+    let val_width = (body.width as usize)
+        .saturating_sub(28 /* sidebar */ + 1 /* border */ + 2 /* margin */
+                        + 2  /* bullet */ + 11 /* label */ + 2 /* right margin */);
+    // For empty text fields we still want a visible cursor at column 0,
+    // so the operator sees "I'm in this field, start typing." For
+    // toggles (nested, upgrade) and the distro chooser we skip the
+    // cursor entirely.
+    let off: usize = match c.field {
+        0  => c.name.visible(val_width).1,
+        2  => c.cpus.visible(val_width).1,
+        3  => c.memory_gb.visible(val_width).1,
+        4  => c.disk_gb.visible(val_width).1,
+        5  => c.user.visible(val_width).1,
+        6  => c.password.visible(val_width).1,
+        9  => c.swap.visible(val_width).1,
+        10 => c.ip.visible(val_width).1,
+        11 => c.gateway.visible(val_width).1,
+        // 1 (distro), 7 (nested), 8 (upgrade) — no cursor.
         _ => return,
     };
     // Inner content starts after the sidebar (28 cols) + content pane border (1 col)

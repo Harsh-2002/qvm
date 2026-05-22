@@ -64,8 +64,8 @@ fn ssh_keys_present_for_both_user_and_root() {
         let count = ud.matches(key.as_str()).count();
         assert!(count >= 2, "key '{key}' appears {count} times, expected ≥2 (user + root)");
     }
-    // `ssh-authorized-keys:` should appear at least twice (one block per user)
-    let blocks = ud.matches("ssh-authorized-keys:").count();
+    // `ssh_authorized_keys:` should appear at least twice (one block per user)
+    let blocks = ud.matches("ssh_authorized_keys:").count();
     assert!(blocks >= 2, "expected 2 ssh-authorized-keys blocks, found {blocks}");
 }
 
@@ -75,9 +75,9 @@ fn empty_ssh_key_list_still_valid_yaml() {
     let s = default_seed("h", "u", "/bin/bash", &keys);
     let ud = user_data(&s);
     // Empty list must be `[]` not bare colon (YAML invalid otherwise)
-    assert!(ud.contains("ssh-authorized-keys:"));
-    // No raw `ssh-authorized-keys:\n  - name:` (which would mean we tried to nest user blocks under keys list)
-    assert!(!ud.contains("ssh-authorized-keys:\n  - name:"), "key block followed immediately by name: would be malformed");
+    assert!(ud.contains("ssh_authorized_keys:"));
+    // No raw `ssh_authorized_keys:\n  - name:` (which would mean we tried to nest user blocks under keys list)
+    assert!(!ud.contains("ssh_authorized_keys:\n  - name:"), "key block followed immediately by name: would be malformed");
 }
 
 #[test]
@@ -295,6 +295,20 @@ fn ntp_module_is_always_emitted() {
 }
 
 #[test]
+fn package_update_always_on() {
+    // Without this, `packages: [qemu-guest-agent]` randomly fails on
+    // Debian/Ubuntu base images that ship with a stale apt cache —
+    // and a missing agent kills `qvm ip` (it queries via the agent).
+    // Verified the regression on aether (1-in-2 boots failed); always-
+    // on apt update fixes it. ~10–20 sec extra on first boot.
+    let keys: Vec<String> = vec![];
+    let s = default_seed("h", "u", "/bin/bash", &keys);
+    let ud = user_data(&s);
+    assert!(ud.contains("package_update: true"),
+        "package_update must always be emitted");
+}
+
+#[test]
 fn package_upgrade_off_by_default() {
     let keys: Vec<String> = vec![];
     let s = default_seed("h", "u", "/bin/bash", &keys);
@@ -304,13 +318,11 @@ fn package_upgrade_off_by_default() {
 }
 
 #[test]
-fn package_upgrade_flag_emits_directives() {
+fn package_upgrade_flag_emits_directive() {
     let keys: Vec<String> = vec![];
     let mut s = default_seed("h", "u", "/bin/bash", &keys);
     s.upgrade = true;
     let ud = user_data(&s);
-    assert!(ud.contains("package_update:  true"),
-        "package_update directive missing");
     assert!(ud.contains("package_upgrade: true"),
         "package_upgrade directive missing");
 }

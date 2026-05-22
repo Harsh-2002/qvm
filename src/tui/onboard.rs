@@ -380,6 +380,46 @@ fn handle_ssh_input(app: &mut OnboardApp, k: KeyEvent) {
 /// Cheap shape check: starts with an OpenSSH key-type prefix and has at
 /// least three space-separated tokens (type, body, comment) — or two if
 /// the user pasted without a comment.
+/// Render an inline text input with a visible block-caret.
+///
+/// `focused` controls whether to draw the reverse-video caret. The
+/// returned spans pre-truncate the value to `width` columns via
+/// `TextInput::visible`, so long values stay editable without the
+/// cursor disappearing offscreen.
+///
+/// This helper is the single place we paint inline cursors in the
+/// onboarding flow; native terminal cursors aren't usable for inputs
+/// rendered inside a multi-line Paragraph (which is what the wizard
+/// uses).
+fn caret_input<'a>(
+    input:    &'a TextInput,
+    width:    usize,
+    focused:  bool,
+    text_st:  Style,
+    caret_st: Style,
+) -> Vec<Span<'a>> {
+    let (slice, cur_x) = input.visible(width.max(1));
+    let chars: Vec<char> = slice.chars().collect();
+    let left:  String = chars.iter().take(cur_x).collect();
+    let right: String = chars.iter().skip(cur_x + 1).collect();
+    let caret_ch: String = if cur_x < chars.len() {
+        chars[cur_x].to_string()
+    } else { " ".to_string() };
+    let mut spans: Vec<Span<'a>> = Vec::with_capacity(3);
+    if !left.is_empty() {
+        spans.push(Span::styled(left, text_st));
+    }
+    if focused {
+        spans.push(Span::styled(caret_ch, caret_st));
+    } else if cur_x < chars.len() {
+        spans.push(Span::styled(caret_ch, text_st));
+    }
+    if !right.is_empty() {
+        spans.push(Span::styled(right, text_st));
+    }
+    spans
+}
+
 fn is_plausible_ssh_key(s: &str) -> bool {
     const PREFIXES: &[&str] = &[
         "ssh-ed25519 ", "ssh-rsa ", "ssh-dss ",
@@ -829,17 +869,19 @@ fn draw_network(f: &mut Frame, area: Rect, app: &OnboardApp) {
     // Custom row
     let cur_custom = app.use_custom_bridge || app.bridge_choices.is_empty();
     let marker = if cur_custom { "▶" } else { " " };
-    let val = app.bridge_custom.value.clone();
-    lines.push(Line::from(vec![
+    let text_st = if cur_custom {
+        Style::default().fg(t.text).add_modifier(Modifier::BOLD)
+    } else { Style::default().fg(t.text_dim) };
+    let caret_st = Style::default().fg(t.accent).add_modifier(Modifier::REVERSED);
+    // Bridge names are short (eth0, br0, virbr0) — 32 cols is plenty.
+    let mut spans = vec![
         Span::raw(" "),
         Span::styled(marker, Style::default().fg(t.accent)),
         Span::raw("  "),
         Span::styled("custom: ", Style::default().fg(t.text_dim)),
-        Span::styled(val,
-            if cur_custom {
-                Style::default().fg(t.text).add_modifier(Modifier::BOLD)
-            } else { Style::default().fg(t.text_dim) }),
-    ]));
+    ];
+    spans.extend(caret_input(&app.bridge_custom, 32, cur_custom, text_st, caret_st));
+    lines.push(Line::from(spans));
     f.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: false }),
         area.inner(Margin { horizontal: 2, vertical: 1 }),
@@ -848,6 +890,14 @@ fn draw_network(f: &mut Frame, area: Rect, app: &OnboardApp) {
 
 fn draw_dns(f: &mut Frame, area: Rect, app: &OnboardApp) {
     let t = &app.theme;
+    let max_w: usize = (area.width as usize).saturating_sub(2 + 6 + 2);
+    let text_st  = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
+    let caret_st = Style::default().fg(t.accent).add_modifier(Modifier::REVERSED);
+    let mut input_spans = vec![
+        Span::styled("  DNS:  ", Style::default().fg(t.text_dim)),
+    ];
+    // DNS step always has the input focused (it's the only thing on it).
+    input_spans.extend(caret_input(&app.dns_input, max_w, true, text_st, caret_st));
     let lines: Vec<Line<'_>> = vec![
         Line::from(Span::styled(
             "DNS resolvers for new VMs.",
@@ -859,12 +909,7 @@ fn draw_dns(f: &mut Frame, area: Rect, app: &OnboardApp) {
             "(`qvm run --ip ...`); DHCP VMs ignore this and use the router's.",
             Style::default().fg(t.text_faint))),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled("  DNS:  ", Style::default().fg(t.text_dim)),
-            Span::styled(app.dns_input.value.clone(),
-                Style::default().fg(t.text).add_modifier(Modifier::BOLD)),
-            Span::styled("█", Style::default().fg(t.accent)),
-        ]),
+        Line::from(input_spans),
         Line::raw(""),
         Line::from(Span::styled(
             "Blank line = no global DNS override (qvm falls back to 1.1.1.1 + 8.8.8.8",
@@ -954,28 +999,37 @@ fn draw_ssh_keys(f: &mut Frame, area: Rect, app: &OnboardApp) {
     let prompt_style = if app.ssh_focus == SshFocus::Input {
         Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
     } else { Style::default().fg(t.text_faint) };
-    let preview: String = if app.paste_buf.value.is_empty() {
-        if app.ssh_focus == SshFocus::Input {
-            "(type or paste a key)".to_string()
-        } else {
-            "(empty)".to_string()
-        }
-    } else if app.paste_buf.value.chars().count() > 80 {
-        app.paste_buf.value.chars().take(77).collect::<String>() + "..."
-    } else {
-        app.paste_buf.value.clone()
-    };
     let preview_style = if app.paste_buf.value.is_empty() {
         Style::default().fg(t.text_faint)
     } else {
         Style::default().fg(t.text)
     };
-    let cursor_glyph = if app.ssh_focus == SshFocus::Input { " ▌" } else { "" };
-    lines.push(Line::from(vec![
-        Span::styled("  > ", prompt_style),
-        Span::styled(preview, preview_style),
-        Span::styled(cursor_glyph, prompt_style),
-    ]));
+    let focused_input = app.ssh_focus == SshFocus::Input;
+    if app.paste_buf.value.is_empty() {
+        // Empty: explicit block-caret on focus so the field doesn't look
+        // dead. Without focus, show the muted "(empty)" placeholder.
+        let placeholder = if focused_input { "(type or paste a key)" } else { "(empty)" };
+        let mut spans = vec![Span::styled("  > ", prompt_style)];
+        if focused_input {
+            spans.push(Span::styled(" ", Style::default()
+                .fg(t.accent).add_modifier(Modifier::REVERSED)));
+        }
+        spans.push(Span::styled(placeholder, if focused_input {
+            Style::default().fg(t.text_faint)
+        } else {
+            preview_style
+        }));
+        lines.push(Line::from(spans));
+    } else {
+        // Non-empty: the shared helper handles scroll + inline caret.
+        // SSH keys are ~80 chars on average so 80 cols is a sensible
+        // window — the operator can still navigate the rest with arrow
+        // keys, the window slides with the cursor.
+        let caret_st = Style::default().fg(t.accent).add_modifier(Modifier::REVERSED);
+        let mut spans = vec![Span::styled("  > ", prompt_style)];
+        spans.extend(caret_input(&app.paste_buf, 80, focused_input, preview_style, caret_st));
+        lines.push(Line::from(spans));
+    }
 
     if let Some((msg, ok)) = &app.flash {
         let style = if *ok { Style::default().fg(t.ok) } else { Style::default().fg(t.warn) };
@@ -1002,20 +1056,24 @@ fn draw_paths(f: &mut Frame, area: Rect, app: &OnboardApp) {
             Style::default().fg(t.text_faint))),
         Line::raw(""),
     ];
+    // 2 (left pad) + 1 (marker) + 1 (space) + 20 (label) + 2 (right margin)
+    let input_width = (inner.width as usize).saturating_sub(2 + 1 + 1 + 20 + 2);
+    let caret_st = Style::default().fg(t.accent).add_modifier(Modifier::REVERSED);
+    let text_st  = Style::default().fg(t.text);
     for i in 0..3 {
         let focused = i == app.paths_field;
         let marker = if focused { "▸" } else { " " };
         let label_style = if focused {
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
         } else { Style::default().fg(t.text_dim) };
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::raw("  "),
             Span::styled(marker, Style::default().fg(t.accent)),
             Span::raw(" "),
             Span::styled(format!("{:<20}", labels[i]), label_style),
-            Span::styled(inputs[i].value.clone(),
-                Style::default().fg(t.text)),
-        ]));
+        ];
+        spans.extend(caret_input(inputs[i], input_width, focused, text_st, caret_st));
+        lines.push(Line::from(spans));
     }
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }

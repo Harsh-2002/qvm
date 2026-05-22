@@ -122,12 +122,18 @@ impl<'a> Seed<'a> {
             String::new()
         };
 
-        // Opt-in `package_update` + `package_upgrade` at the top level
-        // of cloud-config. Cloud-init runs them in the right order
-        // (update → upgrade → packages) on every supported package
-        // manager.
-        let upgrade_block = if self.upgrade {
-            "package_update:  true\npackage_upgrade: true\n"
+        // `package_update: true` is ALWAYS set — without it, cloud-init
+        // runs `apt-cache pkgnames` against a potentially stale apt
+        // cache, and `packages: [qemu-guest-agent]` silently fails on
+        // some boots. Costs ~10–20 sec but makes the qemu-guest-agent
+        // install (and therefore `qvm ip`) reliable. Verified on
+        // aether: same image, same seed, install failed roughly 1-in-2
+        // without this.
+        //
+        // `package_upgrade: true` is opt-in via `--upgrade` because it
+        // adds 1–5 minutes of apt-upgrade work on every fresh VM.
+        let upgrade_line = if self.upgrade {
+            "package_upgrade: true\n"
         } else {
             ""
         };
@@ -137,8 +143,9 @@ impl<'a> Seed<'a> {
 hostname: {name}
 manage_etc_hosts: true
 ssh_pwauth: true
-packages: [qemu-guest-agent]
-{upgrade_block}ntp:
+package_update: true
+{upgrade_line}packages: [qemu-guest-agent]
+ntp:
   enabled: true
   servers:
     - 0.pool.ntp.org
@@ -152,9 +159,9 @@ users:
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: false
     passwd: \"{pw}\"
-    ssh-authorized-keys:
+    ssh_authorized_keys:
 {keys}  - name: root
-    ssh-authorized-keys:
+    ssh_authorized_keys:
 {keys}write_files:
   - path: /opt/qvm-firstboot.sh
     permissions: '0755'
@@ -170,7 +177,7 @@ users:
             keys = if keys_yaml.is_empty() { "      []\n".to_string() } else { keys_yaml },
             firstboot = firstboot_indented,
             motd_entry = motd_entry,
-            upgrade_block = upgrade_block,
+            upgrade_line = upgrade_line,
         )
     }
 }

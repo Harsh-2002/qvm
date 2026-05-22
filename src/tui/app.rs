@@ -149,7 +149,7 @@ pub struct ResizeForm {
 
 #[derive(Debug, Clone, Default)]
 pub struct CreateForm {
-    pub field:       usize, // 0..=7
+    pub field:       usize, // 0..=11
     pub name:        TextInput,
     pub distro_idx:  usize, // index into available distros
     pub distros:     Vec<String>,
@@ -162,6 +162,15 @@ pub struct CreateForm {
     /// Nested virtualization toggle — `true` means the new VM gets
     /// `--cpu host-passthrough` (can run KVM inside). Default true.
     pub nested:      bool,
+    /// Run `package_update` + `package_upgrade` on first boot.
+    /// Default false (off — long boot otherwise).
+    pub upgrade:     bool,
+    /// Persistent swap size (e.g. "1G", "512M"). Empty = no swap.
+    pub swap:        TextInput,
+    /// Static IPv4 CIDR (e.g. "10.1.1.50/24"). Empty = DHCP.
+    pub ip:          TextInput,
+    /// IPv4 default gateway. Required when `ip` is non-empty.
+    pub gateway:     TextInput,
 }
 
 impl App {
@@ -385,8 +394,8 @@ impl App {
             Action::Restart       => self.act_lifecycle("restart", libvirt::reboot),
             Action::ConfirmDelete => self.act_delete(cfg),
             // Create-form interactions.
-            Action::CreateNext    => self.create.field = (self.create.field + 1) % 8,
-            Action::CreatePrev    => self.create.field = (self.create.field + 7) % 8,
+            Action::CreateNext    => self.create.field = (self.create.field + 1) % 12,
+            Action::CreatePrev    => self.create.field = (self.create.field + 11) % 12,
             Action::CreateInsert(c) => self.create_insert(c),
             Action::CreateBackspace => self.create_focused_mut(|f| f.backspace()),
             Action::CreateDelete    => self.create_focused_mut(|f| f.delete()),
@@ -514,13 +523,16 @@ impl App {
 
     fn create_focused_mut<F: FnOnce(&mut TextInput)>(&mut self, f: F) {
         match self.create.field {
-            0 => f(&mut self.create.name),
-            // 1 (distro) and 7 (nested toggle) are not text fields.
-            2 => f(&mut self.create.cpus),
-            3 => f(&mut self.create.memory_gb),
-            4 => f(&mut self.create.disk_gb),
-            5 => f(&mut self.create.user),
-            6 => f(&mut self.create.password),
+            0  => f(&mut self.create.name),
+            // 1 (distro), 7 (nested), 8 (upgrade) are not text fields.
+            2  => f(&mut self.create.cpus),
+            3  => f(&mut self.create.memory_gb),
+            4  => f(&mut self.create.disk_gb),
+            5  => f(&mut self.create.user),
+            6  => f(&mut self.create.password),
+            9  => f(&mut self.create.swap),
+            10 => f(&mut self.create.ip),
+            11 => f(&mut self.create.gateway),
             _ => {}
         }
     }
@@ -535,6 +547,10 @@ impl App {
                 // Space toggles the nested-virt checkbox.
                 if c == ' ' { self.create.nested = !self.create.nested; }
             }
+            8 => {
+                // Space toggles the upgrade-on-first-boot checkbox.
+                if c == ' ' { self.create.upgrade = !self.create.upgrade; }
+            }
             _ => self.create_focused_mut(|f| f.insert(c)),
         }
     }
@@ -547,6 +563,8 @@ impl App {
             }
         } else if self.create.field == 7 {
             self.create.nested = !self.create.nested;
+        } else if self.create.field == 8 {
+            self.create.upgrade = !self.create.upgrade;
         } else { self.create_focused_mut(|f| f.left()); }
     }
 
@@ -557,6 +575,8 @@ impl App {
             }
         } else if self.create.field == 7 {
             self.create.nested = !self.create.nested;
+        } else if self.create.field == 8 {
+            self.create.upgrade = !self.create.upgrade;
         } else { self.create_focused_mut(|f| f.right()); }
     }
 
@@ -711,6 +731,18 @@ impl App {
         };
         let nested = self.create.nested;
         self.close_to_detail();
+        // Whitespace-only values mean "leave it unset" — the TUI fields
+        // are free-text, blank rows shouldn't ever be coerced into
+        // `Some("")` and tripped over by the CLI validation downstream.
+        let maybe = |s: &str| {
+            let t = s.trim();
+            if t.is_empty() { None } else { Some(t.to_string()) }
+        };
+        let upgrade = self.create.upgrade;
+        let swap    = maybe(&self.create.swap.value);
+        let ip      = maybe(&self.create.ip.value);
+        let gateway = maybe(&self.create.gateway.value);
+
         Ok(crate::commands::create::Args {
             name,
             distro: Some(distro),
@@ -721,13 +753,10 @@ impl App {
             password: Some(password),
             no_autostart: false,
             nested: Some(nested),
-            // The TUI Create form doesn't expose these knobs yet — VMs
-            // created through the TUI get the safe defaults (no upgrade,
-            // no swap, DHCP). Adding form fields is a follow-up.
-            upgrade: false,
-            swap:    None,
-            ip:      None,
-            gateway: None,
+            upgrade,
+            swap,
+            ip,
+            gateway,
         })
     }
 }
