@@ -70,14 +70,15 @@ enum Cmd {
         #[arg(short = 'f', long)] force: bool,
     },
 
-    /// Clone an existing VM into a new one. Auto-detects mode: live
-    /// (snapshot + blockcommit, zero downtime) when the source is
-    /// running with a responsive qemu-guest-agent; offline when the
-    /// source is stopped. Pass `--stop` to allow a brief downtime
-    /// instead. Recovers source's user + password hash from its
-    /// cloud-init seed; regenerates the seed with a fresh instance-id
-    /// so cloud-init re-runs (new hostname, fresh SSH host keys, new
-    /// machine-id).
+    /// Clone an existing VM into a new one (live or offline).
+    ///
+    /// Auto-detects mode: live (snapshot + blockcommit, zero downtime)
+    /// when the source is running with a responsive qemu-guest-agent;
+    /// offline when the source is stopped. Pass `--stop` to allow a
+    /// brief downtime instead. Recovers source's user + password hash
+    /// from its cloud-init seed; regenerates the seed with a fresh
+    /// instance-id so cloud-init re-runs (new hostname, fresh SSH host
+    /// keys, new machine-id).
     Clone {
         /// Source VM name.
         src: String,
