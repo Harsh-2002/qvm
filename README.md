@@ -7,6 +7,8 @@ Self-contained VM disks (no qcow2 overlay corruption).
 - 10 cloud distros built in — full amd64 + arm64 coverage
 - A single static binary per arch
 
+![qvm TUI](tui.jpeg)
+
 ## Install
 
 ```
