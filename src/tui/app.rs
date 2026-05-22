@@ -42,6 +42,27 @@ pub enum Mode {
     Filter,
     /// No VMs exist — welcome message + create hint.
     EmptyState,
+    /// Snapshot list for the selected VM (create/revert/delete inline).
+    Snapshots,
+}
+
+/// Sub-state of the Snapshots view when the user has pressed a destructive
+/// key and we're waiting for y/n confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotConfirm { Revert, Delete }
+
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotsView {
+    pub vm_name:  String,
+    pub snaps:    Vec<String>, // newest first
+    pub selected: usize,
+    pub confirm:  Option<SnapshotConfirm>,
+}
+
+impl SnapshotsView {
+    pub fn selected_snap(&self) -> Option<&str> {
+        self.snaps.get(self.selected).map(|s| s.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +122,8 @@ pub struct App {
     /// Inline resize form for the selected VM. Populated when the user
     /// presses [m]; consumed when they Enter to apply.
     pub resize: ResizeForm,
+    /// Snapshot view state. Populated when the user presses [p].
+    pub snapshots: SnapshotsView,
 }
 
 /// Inline resize form. Pre-populated with the selected VM's current
@@ -164,6 +187,7 @@ impl App {
             pending: None,
             orphan_count: 0,
             resize: ResizeForm::default(),
+            snapshots: SnapshotsView::default(),
         }
     }
 
@@ -239,7 +263,7 @@ impl App {
         let visible = self.visible_count();
         if visible == 0 {
             self.selected = 0;
-            if !matches!(self.mode, Mode::CreateForm | Mode::ResizeForm | Mode::Help) {
+            if !matches!(self.mode, Mode::CreateForm | Mode::ResizeForm | Mode::Help | Mode::Snapshots) {
                 self.mode = Mode::EmptyState;
             }
         } else {
@@ -328,6 +352,23 @@ impl App {
                 }
             }
             Action::OpenHelp      => self.mode = Mode::Help,
+            Action::OpenSnapshots => self.open_snapshots(),
+            Action::SnapshotsUp   => self.snapshot_move(-1),
+            Action::SnapshotsDown => self.snapshot_move(1),
+            Action::SnapshotsRevertConfirm => {
+                if self.snapshots.selected_snap().is_some() {
+                    self.snapshots.confirm = Some(SnapshotConfirm::Revert);
+                }
+            }
+            Action::SnapshotsDeleteConfirm => {
+                if self.snapshots.selected_snap().is_some() {
+                    self.snapshots.confirm = Some(SnapshotConfirm::Delete);
+                }
+            }
+            Action::SnapshotsCancel => { self.snapshots.confirm = None; }
+            // SnapshotsNew + SnapshotsConfirm are handled in tui/mod.rs because
+            // they call virsh (libvirt::* via crate::commands::snap::*) and
+            // then need to refresh the list — the refresh logic lives in App.
             Action::OpenFilter    => {
                 self.filter_input = TextInput::with_value(&self.filter);
                 self.mode = Mode::Filter;
@@ -378,9 +419,11 @@ impl App {
                 self.filter_input.clear();
                 self.close_to_detail();
             }
-            // Actions handled in tui/mod.rs (suspend+exec) — should never reach here.
+            // Actions handled in tui/mod.rs (suspend+exec or refresh required)
+            // — should never reach here.
             Action::Console | Action::Browser
                 | Action::SubmitCreate | Action::SubmitResize
+                | Action::SnapshotsNew | Action::SnapshotsConfirm
                 | Action::Noop => {}
         }
         if let Some((_, when)) = self.toast {
@@ -515,6 +558,41 @@ impl App {
         } else if self.create.field == 7 {
             self.create.nested = !self.create.nested;
         } else { self.create_focused_mut(|f| f.right()); }
+    }
+
+    /// Open the snapshot list view for the currently selected VM.
+    /// Populates the list synchronously (one virsh shell-out, fast).
+    fn open_snapshots(&mut self) {
+        let name = match self.selected_name() { Some(n) => n, None => return };
+        let snaps = crate::commands::snap::list_parsed(&name).unwrap_or_default();
+        self.snapshots = SnapshotsView {
+            vm_name: name,
+            snaps,
+            selected: 0,
+            confirm: None,
+        };
+        self.mode = Mode::Snapshots;
+    }
+
+    /// Reload the snapshot list (after create / revert / delete). Best-
+    /// effort: if virsh errors, the existing list is preserved and the
+    /// caller is responsible for surfacing the failure via toast.
+    pub fn refresh_snapshots(&mut self) {
+        if self.snapshots.vm_name.is_empty() { return; }
+        if let Ok(v) = crate::commands::snap::list_parsed(&self.snapshots.vm_name) {
+            let n = v.len();
+            self.snapshots.snaps = v;
+            if n == 0 { self.snapshots.selected = 0; }
+            else if self.snapshots.selected >= n { self.snapshots.selected = n - 1; }
+        }
+    }
+
+    fn snapshot_move(&mut self, delta: i32) {
+        let n = self.snapshots.snaps.len();
+        if n == 0 { return; }
+        let i = self.snapshots.selected as i32 + delta;
+        let i = if i < 0 { (n as i32 - 1).max(0) } else if i as usize >= n { 0 } else { i };
+        self.snapshots.selected = i as usize;
     }
 
     /// Open the inline resize form for the selected VM. Best-effort:

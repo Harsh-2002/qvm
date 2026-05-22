@@ -77,6 +77,21 @@ pub enum Action {
     /// Handled in tui/mod.rs (suspend if disk grow, else inline).
     SubmitResize,
 
+    // Snapshots view.
+    OpenSnapshots,
+    SnapshotsUp,
+    SnapshotsDown,
+    /// Create a new snapshot (timestamped name). Handled in tui/mod.rs.
+    SnapshotsNew,
+    /// Enter confirm-revert state for the selected snapshot.
+    SnapshotsRevertConfirm,
+    /// Enter confirm-delete state for the selected snapshot.
+    SnapshotsDeleteConfirm,
+    /// Execute the pending revert or delete. Handled in tui/mod.rs.
+    SnapshotsConfirm,
+    /// Cancel the pending revert/delete confirm (back to plain Snapshots).
+    SnapshotsCancel,
+
     // Filter.
     FilterInsert(char),
     FilterBackspace,
@@ -100,6 +115,7 @@ pub fn map_key(app: &App, k: KeyEvent) -> Action {
         Mode::ConfirmDelete => key_in_confirm(k),
         Mode::Help          => key_in_help(k),
         Mode::Filter        => key_in_filter(k),
+        Mode::Snapshots     => key_in_snapshots(app, k),
     }
 }
 
@@ -125,6 +141,7 @@ fn key_in_detail(k: KeyEvent) -> Action {
         KeyCode::Char('o') => Action::CycleSort,
         KeyCode::Char('?') => Action::OpenHelp,
         KeyCode::Char('R') => Action::ToggleRaw,
+        KeyCode::Char('p') => Action::OpenSnapshots,
         _ => Action::Noop,
     }
 }
@@ -185,6 +202,29 @@ fn key_in_confirm(k: KeyEvent) -> Action {
 fn key_in_help(k: KeyEvent) -> Action {
     match k.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Enter => Action::CloseToDetail,
+        _ => Action::Noop,
+    }
+}
+
+/// Snapshot list keymap. When a confirm is pending (revert/delete), y/n
+/// drive the confirm; otherwise the letter keys trigger new actions.
+fn key_in_snapshots(app: &App, k: KeyEvent) -> Action {
+    let in_confirm = app.snapshots.confirm.is_some();
+    if in_confirm {
+        return match k.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => Action::SnapshotsConfirm,
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::SnapshotsCancel,
+            _ => Action::Noop,
+        };
+    }
+    match k.code {
+        KeyCode::Esc | KeyCode::Char('q')   => Action::CloseToDetail,
+        KeyCode::Tab                        => Action::CycleFocus,
+        KeyCode::Down | KeyCode::Char('j')  => Action::SnapshotsDown,
+        KeyCode::Up   | KeyCode::Char('k')  => Action::SnapshotsUp,
+        KeyCode::Char('n')                  => Action::SnapshotsNew,
+        KeyCode::Char('r')                  => Action::SnapshotsRevertConfirm,
+        KeyCode::Char('d')                  => Action::SnapshotsDeleteConfirm,
         _ => Action::Noop,
     }
 }

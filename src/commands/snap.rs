@@ -83,6 +83,41 @@ pub fn rotate(name: &str, keep: u32) -> Result<()> {
     Ok(())
 }
 
+// ── silent variants for TUI use ──────────────────────────────────────────────
+//
+// The CLI snap::* functions use run_inherit + println! so the user sees
+// virsh progress and a confirmation line. That interleaves badly with the
+// ratatui alt-screen, so the TUI calls these silent variants and reports
+// status via toasts instead.
+
+pub fn create_silent(name: &str, snap: &str, quiesce: bool) -> Result<()> {
+    libvirt::require_defined(name)?;
+    let mut args: Vec<&str> = vec!["snapshot-create-as", name, snap];
+    if quiesce { args.push("--quiesce"); }
+    cmd::run("virsh", args).map(drop)
+}
+
+pub fn revert_silent(name: &str, snap: &str, running: bool) -> Result<()> {
+    libvirt::require_defined(name)?;
+    let mut args: Vec<&str> = vec!["snapshot-revert", name, snap];
+    if running { args.push("--running"); }
+    cmd::run("virsh", args).map(drop)
+}
+
+pub fn remove_silent(name: &str, snap: &str) -> Result<()> {
+    libvirt::require_defined(name)?;
+    cmd::run("virsh", ["snapshot-delete", name, snap]).map(drop)
+}
+
+/// Parsed snapshot names for the TUI, newest first.
+pub fn list_parsed(name: &str) -> Result<Vec<String>> {
+    libvirt::require_defined(name)?;
+    let raw = cmd::run("virsh", ["snapshot-list", name])?;
+    let mut v = parse_snapshot_list(&raw);
+    v.reverse(); // newest first for UI
+    Ok(v)
+}
+
 /// Parse the `Name` column from `virsh snapshot-list` output. The format
 /// is a fixed 3-row header followed by space-separated rows whose first
 /// column is the snapshot name.

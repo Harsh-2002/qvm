@@ -33,3 +33,18 @@ fn toast_ok_and_err_distinguish() {
     app.toast_err("err message".into());
     assert!(matches!(app.current_toast(), Some(Toast::Err(_))));
 }
+
+#[test]
+fn snapshots_view_starts_empty() {
+    let app = App::new();
+    assert!(app.snapshots.vm_name.is_empty());
+    assert!(app.snapshots.snaps.is_empty());
+    assert_eq!(app.snapshots.selected, 0);
+    assert!(app.snapshots.confirm.is_none());
+}
+
+#[test]
+fn snapshots_selected_snap_returns_none_when_list_empty() {
+    let app = App::new();
+    assert!(app.snapshots.selected_snap().is_none());
+}
