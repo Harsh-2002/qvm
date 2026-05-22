@@ -119,27 +119,32 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NOTES:    ${{ inputs.notes }}
+          VERSION:  ${{ steps.ver.outputs.version }}
+          TAG:      ${{ steps.ver.outputs.tag }}
+          NOTES:    ${{ github.event.inputs.notes }}
           REPO:     ${{ github.repository }}
+        # Build release notes via a writeable file (not an embedded
+        # heredoc): YAML's `run: |` block scalar requires every body
+        # line to be indented at least to the block level, and an
+        # in-shell heredoc whose interior is dedented for readability
+        # breaks the YAML parse. `--notes-file` sidesteps the problem.
         run: |
           set -e
-          BODY=$(cat <<EOF
-qvm ${{ steps.ver.outputs.version }} — Linux amd64 + arm64 (static-musl).
-
-\`\`\`
-curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo sh
-\`\`\`
-EOF
-)
-          if [ -n "${NOTES:-}" ]; then
-            BODY="$BODY
-
----
-
-${NOTES}"
-          fi
-          gh release create "${{ steps.ver.outputs.tag }}" \
-            --title "qvm ${{ steps.ver.outputs.version }}" \
-            --notes "$BODY" \
+          {
+            echo "qvm $VERSION — Linux amd64 + arm64 (static-musl)."
+            echo ""
+            echo '```'
+            echo "curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sudo sh"
+            echo '```'
+            if [ -n "${NOTES:-}" ]; then
+              echo ""
+              echo "---"
+              echo ""
+              echo "$NOTES"
+            fi
+          } > /tmp/release-notes.md
+          gh release create "$TAG" \
+            --title "qvm $VERSION" \
+            --notes-file /tmp/release-notes.md \
             dist/qvm-linux-amd64-static.zip \
             dist/qvm-linux-arm64-static.zip
