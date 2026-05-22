@@ -331,7 +331,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 // ── dominfo extraction (best-effort) ─────────────────────────────────────────
 
-fn dominfo_cpus(name: &str) -> Option<u32> {
+pub(crate) fn dominfo_cpus(name: &str) -> Option<u32> {
     let raw = libvirt::dominfo(name).ok()?;
     for line in raw.lines() {
         if let Some(v) = line.trim().strip_prefix("CPU(s):") {
@@ -341,7 +341,7 @@ fn dominfo_cpus(name: &str) -> Option<u32> {
     None
 }
 
-fn dominfo_memory_gb(name: &str) -> Option<u32> {
+pub(crate) fn dominfo_memory_gb(name: &str) -> Option<u32> {
     let raw = libvirt::dominfo(name).ok()?;
     // virsh prints "Max memory:     4194304 KiB"
     for line in raw.lines() {
@@ -356,7 +356,7 @@ fn dominfo_memory_gb(name: &str) -> Option<u32> {
     None
 }
 
-fn qemu_img_virtual_size_gb(disk: &Path) -> Option<u32> {
+pub(crate) fn qemu_img_virtual_size_gb(disk: &Path) -> Option<u32> {
     let out = cmd::run("qemu-img", [
         "info", "--output=human", disk.to_string_lossy().as_ref(),
     ]).ok()?;

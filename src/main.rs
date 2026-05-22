@@ -70,6 +70,27 @@ enum Cmd {
         #[arg(short = 'f', long)] force: bool,
     },
 
+    /// Clone an existing VM into a new one. Source must be stopped.
+    /// Recovers source's user + password hash from its cloud-init seed;
+    /// regenerates the seed with a fresh instance-id so cloud-init
+    /// re-runs (new hostname, fresh SSH host keys, new machine-id).
+    Clone {
+        /// Source VM name.
+        src: String,
+        /// Destination VM name.
+        dst: String,
+        /// CPU count for the clone (defaults to source's).
+        #[arg(short = 'c', long)] cpus: Option<u32>,
+        /// RAM in GB for the clone (defaults to source's).
+        #[arg(short = 'm', long = "memory")] memory_gb: Option<u32>,
+        /// Disk in GB for the clone (defaults to source's; must be >= source).
+        #[arg(short = 's', long = "disk")] disk_gb: Option<u32>,
+        /// Do NOT autostart on host boot.
+        #[arg(long)] no_autostart: bool,
+        /// Disable nested virtualization for the clone.
+        #[arg(long)] no_nested: bool,
+    },
+
     /// Start one or more stopped VMs (or `--all`).
     Start   { names: Vec<String>, #[arg(long)] all: bool },
     /// Graceful shutdown of one or more VMs (or `--all`).
@@ -297,6 +318,19 @@ fn dispatch(cli: &Cli, cfg_path: &std::path::Path) -> Result<()> {
         }
 
         Cmd::Rm { name, force }   => commands::delete::run(&cfg, name, *force),
+
+        Cmd::Clone { src, dst, cpus, memory_gb, disk_gb, no_autostart, no_nested } => {
+            commands::clone::run(&cfg, commands::clone::Args {
+                src: src.clone(),
+                dst: dst.clone(),
+                cpus: *cpus,
+                memory_gb: *memory_gb,
+                disk_gb: *disk_gb,
+                no_autostart: *no_autostart,
+                nested: if *no_nested { Some(false) } else { None },
+            })
+        }
+
         Cmd::Start   { names, all } => commands::lifecycle::batch(commands::lifecycle::Verb::Start,   names, *all),
         Cmd::Stop    { names, all } => commands::lifecycle::batch(commands::lifecycle::Verb::Stop,    names, *all),
         Cmd::Restart { names, all } => commands::lifecycle::batch(commands::lifecycle::Verb::Restart, names, *all),

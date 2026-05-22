@@ -1,4 +1,5 @@
 pub mod cleanup;
+pub mod clone;
 pub mod completions;
 pub mod console;
 pub mod create;
