@@ -188,6 +188,15 @@ fn handle_action(
             app.refresh_snapshots();
         }
         Action::SnapshotsConfirm => {
+            // SUSPEND BOUNDARY: every snapshot op currently called from
+            // here (snapshot-create-as without --disk-only, snapshot-revert,
+            // snapshot-delete) is virsh metadata-only and sub-second, so
+            // running inline against the alt-screen is safe. If a future
+            // change adds an op that takes seconds — external `--disk-only`
+            // snapshots driving qemu-img convert, or `blockcommit` to merge
+            // an overlay back — that path MUST wrap the call in
+            // `suspend(terminal, || …)` like the create / resize / console
+            // paths above. Otherwise the screen will freeze with no progress.
             use crate::tui::app::SnapshotConfirm;
             let vm = app.snapshots.vm_name.clone();
             let Some(snap) = app.snapshots.selected_snap().map(str::to_string) else {
