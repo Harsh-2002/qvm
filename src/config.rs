@@ -5,9 +5,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/qvm/config.yml";
-/// Legacy TOML path. Detected by `Config::load` only to emit a clear
-/// migration hint — never parsed.
-const LEGACY_CONFIG_PATH: &str = "/etc/qvm/config.toml";
 
 /// Top-level config. Every field has a default, so the entire file is optional.
 #[derive(Debug, Clone, Deserialize)]
@@ -395,18 +392,6 @@ impl Config {
             let raw = fs::read_to_string(p)?;
             serde_yaml::from_str(&raw)?
         } else {
-            // No new config file. If the user has a leftover TOML file from
-            // before the YAML migration, point them at it once. We only
-            // emit the notice when the resolved path matches the default
-            // — if the operator explicitly passed --config /elsewhere.yml,
-            // legacy state at the system default is irrelevant.
-            if p == Path::new(DEFAULT_CONFIG_PATH) && Path::new(LEGACY_CONFIG_PATH).exists() {
-                eprintln!(
-                    "qvm: notice — {LEGACY_CONFIG_PATH} exists but qvm now reads {}.\n\
-                     qvm: run `qvm init --force` to regenerate, or rename the file by hand.",
-                    DEFAULT_CONFIG_PATH,
-                );
-            }
             Config::default()
         };
         // If user defined no distros in the file, give them the baked-in set.
