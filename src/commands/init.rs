@@ -106,6 +106,21 @@ bind = \"{vnc}\"
 [tui]
 theme = \"mocha\"  # \"mocha\" (dark, default) or \"latte\" (light)
 
+[motd]
+# When enabled, qvm drops a small POSIX script into /etc/profile.d/
+# on every new VM and silences the distro's default banners.
+enable = true
+color  = \"auto\"        # \"auto\" (respects NO_COLOR + TTY), \"always\", \"never\"
+
+# Optional palette override — every field is independent, omit to keep defaults.
+# Values are ANSI escapes WITHOUT the leading \\033 (printf prepends it).
+# [motd.colors]
+# label = \"[0;36m\"     # cyan field labels
+# bold  = \"[1m\"
+# ok    = \"[0;32m\"     # CPU/RAM < 60%
+# warn  = \"[1;33m\"     # 60–79%
+# crit  = \"[0;31m\"     # ≥ 80%
+
 # ── Custom distros (optional) ────────────────────────────────────────────────
 # Add or override built-in distros. Built-ins:
 #   ubuntu:24.04   debian:13   fedora:42   alpine:3.20   rocky:9

@@ -193,6 +193,38 @@ fn vm_path_accessors_join_under_configured_dirs() {
 }
 
 #[test]
+fn motd_defaults_are_enabled_with_auto_color() {
+    let cfg = Config::default();
+    assert!(cfg.motd.enable, "MOTD must default to enabled");
+    assert_eq!(cfg.motd.color, "auto");
+    // Default palette must match the 16-colour ANSI we ship.
+    assert_eq!(cfg.motd.colors.label, "[0;36m");
+    assert_eq!(cfg.motd.colors.ok,    "[0;32m");
+}
+
+#[test]
+fn motd_toggle_off_via_toml() {
+    let f = write_tmp(r#"
+[motd]
+enable = false
+"#);
+    let cfg = Config::load(Some(f.path())).unwrap();
+    assert!(!cfg.motd.enable);
+}
+
+#[test]
+fn motd_palette_override_via_toml() {
+    let f = write_tmp(r#"
+[motd.colors]
+ok = "[0;34m"
+"#);
+    let cfg = Config::load(Some(f.path())).unwrap();
+    assert_eq!(cfg.motd.colors.ok, "[0;34m");
+    // Untouched fields keep defaults.
+    assert_eq!(cfg.motd.colors.label, "[0;36m");
+}
+
+#[test]
 fn ssh_keys_at_top_level_parse_normally() {
     // The fixed layout: top-level `ssh_keys` before any [section].
     let f = write_tmp(r#"

@@ -205,6 +205,7 @@ pub fn run(cfg: &Config, a: Args) -> Result<()> {
         password_hash: &pw_hash,
         ssh_keys: &cfg.ssh_keys,
         grub_timeout: cfg.defaults.grub_timeout,
+        motd: if cfg.motd.enable { Some(&cfg.motd) } else { None },
     }.build(&dst_ci, &dst_iso)?;
 
     // ── define + start ──────────────────────────────────────────────────────

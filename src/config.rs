@@ -15,6 +15,7 @@ pub struct Config {
     pub defaults: Defaults,
     pub vnc: Vnc,
     pub tui: Tui,
+    pub motd: Motd,
     pub ssh_keys: Vec<String>,
     /// Distro registry. Key = "name:version" (docker-style).
     /// Empty = use the baked-in defaults.
@@ -63,6 +64,40 @@ pub struct Vnc {
 pub struct Tui {
     /// Theme name. `"mocha"` (dark, default) or `"latte"` (light).
     pub theme: String,
+}
+
+/// MOTD installation knob.
+///
+/// When `enable = true` (the default), `qvm` drops a small POSIX shell
+/// script into `/etc/profile.d/qvm-motd.sh` via the cloud-init seed,
+/// and the first-boot script silences the distro's default banners
+/// (`/etc/update-motd.d/*`, `/etc/motd`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Motd {
+    pub enable: bool,
+    /// `"auto"` (respects NO_COLOR + TTY), `"always"`, or `"never"`.
+    pub color: String,
+    /// Optional palette override. Values are ANSI escape sequences
+    /// WITHOUT the leading `\033` (e.g. `"[0;36m"` for cyan). Any
+    /// subset of fields may be set; unset fields fall back to the
+    /// baked-in defaults (16-colour ANSI).
+    pub colors: MotdColors,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct MotdColors {
+    /// Field labels (`IP:`, `Uptime:`, …).
+    pub label: String,
+    /// Bold attribute used for the hostname banner.
+    pub bold:  String,
+    /// CPU / RAM colour when below 60%.
+    pub ok:    String,
+    /// CPU / RAM colour when 60–79%.
+    pub warn:  String,
+    /// CPU / RAM colour when ≥ 80%.
+    pub crit:  String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -158,6 +193,30 @@ impl Default for Tui {
     fn default() -> Self { Self { theme: "mocha".into() } }
 }
 
+impl Default for Motd {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            color:  "auto".into(),
+            colors: MotdColors::default(),
+        }
+    }
+}
+
+impl Default for MotdColors {
+    fn default() -> Self {
+        // ANSI escapes WITHOUT the leading \033, matching the form the
+        // shell script expects. 16-colour ANSI for portability.
+        Self {
+            label: "[0;36m".into(),  // cyan
+            bold:  "[1m".into(),
+            ok:    "[0;32m".into(),  // green
+            warn:  "[1;33m".into(),  // yellow
+            crit:  "[0;31m".into(),  // red
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -166,6 +225,7 @@ impl Default for Config {
             defaults: Defaults::default(),
             vnc: Vnc::default(),
             tui: Tui::default(),
+            motd: Motd::default(),
             ssh_keys: vec![],
             distros: builtin_distros(),
         }
